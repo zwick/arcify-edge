@@ -12,10 +12,13 @@ function background(overrides = () => {}) {
   const messages = [];
   const errors = [];
   const documents = [];
+  const injections = [];
+  const warnings = [];
   let listener;
   const chrome = {
     commands: { onCommand: { addListener: (handler) => { listener = handler; } } },
     tabs: { query: async () => [{ url }] },
+    scripting: { executeScript: async (options) => { injections.push(options); } },
     runtime: {
       getURL: (file) => `chrome-extension://test/${file}`,
       getContexts: async () => [],
@@ -26,11 +29,14 @@ function background(overrides = () => {}) {
   overrides(chrome);
   const context = vm.createContext({
     chrome,
-    console: { error: (...args) => errors.push(args) }
+    console: {
+      error: (...args) => errors.push(args),
+      warn: (...args) => warnings.push(args)
+    }
   });
   vm.runInContext(source("background.js"), context);
   return {
-    messages, errors, documents,
+    messages, errors, documents, injections, warnings,
     copy: (tab) => context.copyPageUrl(tab),
     command: (...args) => listener(...args)
   };
@@ -70,7 +76,7 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.commands["copy-page-url"].suggested_key.mac, "Command+Shift+C");
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
-  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting"]);
   assert.ok(existsSync(path.join(extensionPath, manifest.background.service_worker)));
   assert.match(source("offscreen.html"), /<script src="offscreen.js"><\/script>/);
   assert.match(source("offscreen.html"), /<textarea id="clipboard"/);
@@ -203,4 +209,80 @@ test("offscreen ignores other messages and rejects invalid URLs", () => {
     assert.equal(page.send({ target: "offscreen", type: "copy-page-url", url: invalid }).ok, false);
   }
   assert.equal(page.copied(), undefined);
+});
+
+test("shows confirmation in the copied tab only after clipboard success", async () => {
+  const app = background((chrome) => {
+    chrome.scripting.executeScript = async (options) => {
+      assert.equal(app.messages.length, 1);
+      assert.equal(options.target.tabId, 42);
+      assert.equal(options.files[0], "toast.js");
+    };
+  });
+  await app.copy({ id: 42, url });
+});
+
+test("failed clipboard writes never show confirmation", async () => {
+  const app = background((chrome) => {
+    chrome.runtime.sendMessage = async () => ({ ok: false, error: "Denied" });
+  });
+  await assert.rejects(app.copy({ id: 42, url }), /Denied/);
+  assert.equal(app.injections.length, 0);
+});
+
+test("restricted pages copy without injecting confirmation", async () => {
+  const app = background();
+  for (const restricted of ["edge://extensions/", "about:blank", "chrome-extension://other/page.html"]) {
+    await app.copy({ id: 42, url: restricted });
+  }
+  assert.equal(app.messages.length, 3);
+  assert.equal(app.injections.length, 0);
+});
+
+test("blocked injection preserves copying and reports confirmation failure", async () => {
+  const app = background((chrome) => {
+    chrome.scripting.executeScript = async () => { throw new Error("Cannot access this page"); };
+  });
+  await app.copy({ id: 42, url });
+  assert.equal(app.messages.length, 1);
+  assert.equal(app.warnings.length, 1);
+  assert.match(app.warnings[0][0], /copied the URL/);
+});
+
+test("toast replaces prior confirmation, stays isolated, and removes itself", () => {
+  const hosts = new Map();
+  const timers = [];
+  const document = {
+    getElementById: (id) => hosts.get(id),
+    createElement: (tag) => ({
+      tag, children: [], attributes: {}, properties: {},
+      style: { setProperty() {} },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      append(...children) { this.children.push(...children); },
+      attachShadow(options) {
+        this.shadowOptions = options;
+        this.shadow = document.createElement("shadow");
+        return this.shadow;
+      },
+      remove() { if (hosts.get(this.id) === this) hosts.delete(this.id); }
+    }),
+    documentElement: { append: (host) => hosts.set(host.id, host) }
+  };
+  const context = vm.createContext({
+    document, setTimeout: (callback, delay) => { timers.push({ callback, delay }); }
+  });
+  vm.runInContext(source("toast.js"), context);
+  const first = hosts.get("arcify-edge-copy-confirmation");
+  assert.equal(first.shadowOptions.mode, "closed");
+  assert.equal(first.shadow.children[1].textContent, "URL copied");
+  assert.equal(first.shadow.children[1].attributes.role, "status");
+  assert.match(first.shadow.children[0].textContent, /prefers-reduced-motion/);
+  assert.equal(timers[0].delay, 1400);
+  vm.runInContext(source("toast.js"), context);
+  assert.equal(hosts.size, 1);
+  assert.notEqual(hosts.get(first.id), first);
+  timers[0].callback();
+  assert.equal(hosts.size, 1);
+  timers[1].callback();
+  assert.equal(hosts.size, 0);
 });

@@ -3,7 +3,7 @@
   "name": "Arcify Edge",
   "version": "1.0.0",
   "description": "Copy the active page URL with Command+Shift+C.",
-  "permissions": ["activeTab", "clipboardWrite", "offscreen"],
+  "permissions": ["activeTab", "clipboardWrite", "offscreen", "scripting"],
   "background": {
     "service_worker": "background.js"
   },

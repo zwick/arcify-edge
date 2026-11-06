@@ -8,9 +8,11 @@ Copy the active page's full URL with **Cmd+Shift+C** on macOS (**Ctrl+Shift+C** 
 2. Choose **Load unpacked** and select this repository's `extension` folder.
 3. Open `edge://extensions/shortcuts` and check that **Copy the active page URL** is assigned to **Cmd+Shift+C** (Mac) or **Ctrl+Shift+C** (Windows/Linux), with scope **In Microsoft Edge**. Assign it manually if blank or conflicting.
 
-With Edge focused, press the shortcut to copy the current URL, including its query string and fragment. Paste normally. If Edge's developer tools open instead, revisit the shortcut assignment.
+With Edge focused, press the shortcut to copy the current URL, including its query string and fragment. A brief **URL copied** message appears at the top of the page, then fades away. Paste normally. If Edge's developer tools open instead, revisit the shortcut assignment.
 
-The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, and `offscreen` for a hidden clipboard document. URLs stay local; there is no storage or network traffic. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands) and [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen).
+Edge's restricted pages (such as `edge://extensions` and extension stores) still copy, but cannot display the message. File pages need **Allow access to file URLs** enabled in the extension's details to display it.
+
+The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, `offscreen` for a hidden clipboard document, and `scripting` to show the confirmation. URLs stay local; there is no storage or network traffic. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands), [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen), and [script injection permissions](https://developer.chrome.com/docs/extensions/reference/api/scripting).
 
 ## Checks
 
