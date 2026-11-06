@@ -47,4 +47,14 @@ async function copyPageUrl(tab) {
   if (!response?.ok) {
     throw new Error(response?.error ?? "The clipboard document did not respond.");
   }
+
+  if (!Number.isInteger(activeTab.id) || !/^(https?|file):/.test(activeTab.url)) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      files: ["toast.js"]
+    });
+  } catch (error) {
+    console.warn("Arcify Edge copied the URL, but could not display confirmation:", error);
+  }
 }
