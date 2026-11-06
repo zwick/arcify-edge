@@ -12,7 +12,13 @@ With Edge focused, press the shortcut to copy the current URL, including its que
 
 Edge's restricted pages (such as `edge://extensions` and extension stores) still copy, but cannot display the message. File pages need **Allow access to file URLs** enabled in the extension's details to display it.
 
-The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, `offscreen` for a hidden clipboard document, and `scripting` to show the confirmation. URLs stay local; there is no storage or network traffic. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands), [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen), and [script injection permissions](https://developer.chrome.com/docs/extensions/reference/api/scripting).
+The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, `offscreen` for a hidden clipboard document, and `scripting` for page feedback and drag-to-split. URLs are handled locally; opening a split loads the link normally. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands), [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen), and [script injection permissions](https://developer.chrome.com/docs/extensions/reference/api/scripting).
+
+## Try drag-to-split
+
+Reload the extension after updating. On an HTTP or HTTPS page, click **Arcify Edge** in Edge's extensions menu or toolbar to enable drag mode for that page. Drag a page link into the left or right edge zone and release to open it beside the current page in native split view. Click the extension again to disable; re-enable after navigation.
+
+This proof of concept uses the [native split-view extension API](https://developer.chrome.com/blog/split-view-api-extensions). It requires a browser exposing that API (verified on Edge 157.0.4341.42). Use Edge's split controls to unsplit before opening another pair. Link drags start in the main page; browser tab-strip drags and links inside frames are outside this experiment.
 
 ## Checks
 

@@ -58,3 +58,66 @@ async function copyPageUrl(tab) {
     console.warn("Arcify Edge copied the URL, but could not display confirmation:", error);
   }
 }
+
+chrome.action.onClicked.addListener((tab) => {
+  enableSplitDrag(tab).catch(async (error) => {
+    console.error("Arcify Edge could not enable drag-to-split:", error);
+    await chrome.action.setBadgeText({ tabId: tab.id, text: "!" });
+    await chrome.action.setTitle({ tabId: tab.id, title: error.message });
+  });
+});
+
+async function enableSplitDrag(tab) {
+  if (typeof chrome.tabs.createSplit !== "function") {
+    throw new Error("This browser does not support native split-view extensions.");
+  }
+  if (!Number.isInteger(tab.id) || !/^https?:/.test(tab.url ?? "")) {
+    throw new Error("Enable drag-to-split on an HTTP or HTTPS page.");
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["split-drag.js"]
+  });
+  await chrome.action.setBadgeText({ tabId: tab.id, text: "" });
+  await chrome.action.setTitle({
+    tabId: tab.id,
+    title: "Toggle link drag-to-split on this page"
+  });
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "split-page-link") return;
+  splitPageLink(message, sender).then(
+    () => sendResponse({ ok: true }),
+    (error) => {
+      console.error("Arcify Edge could not split the link:", error);
+      sendResponse({ ok: false, error: error.message });
+    }
+  );
+  return true;
+});
+
+async function splitPageLink(message, sender) {
+  if (!Number.isInteger(sender.tab?.id) || sender.frameId !== 0) {
+    throw new Error("Drag a link from the enabled page.");
+  }
+  if (message.side !== "left" && message.side !== "right") {
+    throw new Error("Choose the left or right edge.");
+  }
+  const url = new URL(message.url);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Only HTTP and HTTPS links can open in split view.");
+  }
+  if (typeof chrome.tabs.createSplit !== "function") {
+    throw new Error("This browser does not support native split-view extensions.");
+  }
+  const tab = await chrome.tabs.get(sender.tab.id);
+  if (tab.splitViewId !== undefined && tab.splitViewId !== -1) {
+    throw new Error("This page is already in split view. Unsplit it before dragging another link.");
+  }
+  await chrome.tabs.create({
+    url: url.href,
+    splitWithTabId: tab.id,
+    index: message.side === "left" ? tab.index : tab.index + 1
+  });
+}
