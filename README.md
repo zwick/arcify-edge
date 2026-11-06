@@ -16,7 +16,9 @@ The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to
 
 ## Try drag-to-split
 
-Reload the extension after updating. On an HTTP or HTTPS page, click **Arcify Edge** in Edge's extensions menu or toolbar to enable drag mode for that page. Drag a page link into the left or right edge zone and release to open it beside the current page in native split view. Click the extension again to disable; re-enable after navigation.
+Reload the extension after updating, then refresh open web pages. Drag a page link into either highlighted edge zone and release to open it beside the current page in native split view. The zones appear automatically during link drags, cover up to 240 pixels on each side, and highlight blue when ready to accept the drop.
+
+Automatic handling runs on HTTP and HTTPS pages. Edge may ask to **read and change data on websites** for this access; allow the sites where you want drag-to-split. Page links are handled locally and opened only when dropped into a zone.
 
 This proof of concept uses the [native split-view extension API](https://developer.chrome.com/blog/split-view-api-extensions). It requires a browser exposing that API (verified on Edge 157.0.4341.42). Use Edge's split controls to unsplit before opening another pair. Link drags start in the main page; browser tab-strip drags and links inside frames are outside this experiment.
 
