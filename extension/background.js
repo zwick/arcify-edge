@@ -1,5 +1,63 @@
 let creatingOffscreen;
 
+const splitSelectedMenuId = "split-selected-tabs";
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: splitSelectedMenuId,
+    title: "Open selected tabs in split screen",
+    contexts: ["tab"]
+  }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Arcify Edge could not create the tab menu:", chrome.runtime.lastError.message);
+    }
+  });
+});
+
+chrome.contextMenus.onClicked.addListener(handleSelectedTabsMenu);
+
+function handleSelectedTabsMenu(info, tab) {
+  if (info.menuItemId !== splitSelectedMenuId) return;
+  return splitSelectedTabs(tab).catch(async (error) => {
+    console.error("Arcify Edge could not split the selected tabs:", error);
+    await chrome.tabs.create({
+      windowId: tab?.windowId,
+      url: chrome.runtime.getURL(`split-error.html?message=${encodeURIComponent(error.message)}`)
+    });
+  }).catch((error) => {
+    console.error("Arcify Edge could not display the split error:", error);
+  });
+}
+
+async function splitSelectedTabs(clickedTab) {
+  if (!Number.isInteger(clickedTab?.id) || !Number.isInteger(clickedTab.windowId)) {
+    throw new Error("Right-click one of the two selected tabs.");
+  }
+  const tabs = await chrome.tabs.query({ highlighted: true, windowId: clickedTab.windowId });
+  if (tabs.length !== 2) {
+    throw new Error(`Select exactly two tabs to open in split screen (${tabs.length} selected).`);
+  }
+  if (!tabs.some((tab) => tab.id === clickedTab.id)) {
+    throw new Error("Right-click one of the two selected tabs.");
+  }
+  if (typeof chrome.tabs.createSplit !== "function") {
+    throw new Error("This browser does not support native split-view extensions.");
+  }
+  tabs.sort((a, b) => a.index - b.index);
+  const [first, second] = tabs;
+  if (tabs.some((tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1)) {
+    throw new Error("A selected tab is already in split view. Unsplit it first.");
+  }
+  if (first.windowId !== second.windowId || first.groupId !== second.groupId ||
+      first.pinned !== second.pinned) {
+    throw new Error("Select two tabs in the same window and group, with the same pinned state.");
+  }
+  if (second.index !== first.index + 1) {
+    throw new Error("Move the two selected tabs next to each other, then try again.");
+  }
+  await chrome.tabs.createSplit([first.id, second.id]);
+}
+
 function ensureOffscreenDocument() {
   if (!creatingOffscreen) {
     creatingOffscreen = (async () => {

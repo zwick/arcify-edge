@@ -20,6 +20,12 @@ Reload the extension after updating. On an HTTP or HTTPS page, click **Arcify Ed
 
 This proof of concept uses the [native split-view extension API](https://developer.chrome.com/blog/split-view-api-extensions). It requires a browser exposing that API (verified on Edge 157.0.4341.42). Use Edge's split controls to unsplit before opening another pair. Link drags start in the main page; browser tab-strip drags and links inside frames are outside this experiment.
 
+## Split selected tabs
+
+Reload the extension, select **exactly two adjacent tabs** in Edge's tab strip or vertical sidebar, then right-click either selected tab and choose **Open selected tabs in split screen**. Both tabs must share a group and pinned state, and neither can already be split. Arcify leaves tab order and membership unchanged. Invalid selections open an explanatory extension tab, including on restricted pages.
+
+This adds only the `contextMenus` permission. See the [native tab-menu context](https://developer.chrome.com/docs/extensions/reference/api/contextMenus#type-ContextType) and [split-view API constraints](https://developer.chrome.com/blog/split-view-api-extensions#general-constraints).
+
 ## Checks
 
 Run `node --test` with Node.js 20 or later. For a browser check, load the extension in Edge, open a page with a query string and fragment, press the shortcut, and paste into a text field. Repeat after switching tabs/windows and on `edge://extensions`. Inspect errors through the extension's **service worker** link on `edge://extensions`.

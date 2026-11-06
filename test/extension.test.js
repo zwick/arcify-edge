@@ -17,7 +17,14 @@ function background(overrides = () => {}) {
   let listener;
   let actionListener;
   let messageListener;
+  let menuListener;
+  let installedListener;
+  const menus = [];
   const chrome = {
+    contextMenus: {
+      create: (options, callback) => { menus.push(options); callback(); },
+      onClicked: { addListener: (handler) => { menuListener = handler; } }
+    },
     commands: { onCommand: { addListener: (handler) => { listener = handler; } } },
     action: {
       onClicked: { addListener: (handler) => { actionListener = handler; } },
@@ -27,6 +34,7 @@ function background(overrides = () => {}) {
     tabs: { query: async () => [{ url }] },
     scripting: { executeScript: async (options) => { injections.push(options); } },
     runtime: {
+      onInstalled: { addListener: (handler) => { installedListener = handler; } },
       getURL: (file) => `chrome-extension://test/${file}`,
       getContexts: async () => [],
       sendMessage: async (message) => { messages.push(message); return { ok: true }; },
@@ -45,7 +53,10 @@ function background(overrides = () => {}) {
   });
   vm.runInContext(source("background.js"), context);
   return {
-    messages, errors, documents, injections, warnings,
+    messages, errors, documents, injections, warnings, menus,
+    install: () => installedListener(),
+    menu: (info, tab) => menuListener(info, tab),
+    splitSelected: (tab) => context.splitSelectedTabs(tab),
     copy: (tab) => context.copyPageUrl(tab),
     enableDrag: (tab) => context.enableSplitDrag(tab),
     split: (message, sender) => context.splitPageLink(message, sender),
@@ -89,12 +100,112 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.commands["copy-page-url"].suggested_key.mac, "Command+Shift+C");
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
-  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus"]);
   assert.equal(manifest.action.default_title, "Toggle link drag-to-split on this page");
   assert.equal(manifest.host_permissions, undefined);
   assert.ok(existsSync(path.join(extensionPath, manifest.background.service_worker)));
   assert.match(source("offscreen.html"), /<script src="offscreen.js"><\/script>/);
   assert.match(source("offscreen.html"), /<textarea id="clipboard"/);
+});
+
+const selectedPair = () => [
+  { id: 41, windowId: 7, index: 2, groupId: -1, pinned: false, splitViewId: -1 },
+  { id: 42, windowId: 7, index: 3, groupId: -1, pinned: false, splitViewId: -1 }
+];
+
+test("installs only a native tab-strip context menu", () => {
+  const app = background();
+  app.install();
+  assert.equal(app.menus.length, 1);
+  assert.equal(app.menus[0].id, "split-selected-tabs");
+  assert.deepEqual(Array.from(app.menus[0].contexts), ["tab"]);
+});
+
+test("selected tab split queries the clicked window and preserves strip order", async () => {
+  const pairs = [];
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => {
+      assert.equal(options.highlighted, true);
+      assert.equal(options.windowId, 7);
+      return selectedPair().reverse();
+    };
+    chrome.tabs.createSplit = async (ids) => { pairs.push(Array.from(ids)); };
+  });
+  await app.splitSelected({ id: 42, windowId: 7 });
+  assert.deepEqual(pairs, [[41, 42]]);
+  assert.equal(app.injections.length, 0);
+});
+
+test("rejects counts other than two, unrelated clicks, and incompatible pairs without splitting", async () => {
+  const cases = [
+    [[], /exactly two.*0 selected/],
+    [selectedPair().slice(0, 1), /exactly two.*1 selected/],
+    [[...selectedPair(), { id: 43 }], /exactly two.*3 selected/],
+    [selectedPair().map((tab) => ({ ...tab, id: tab.id + 10 })), /Right-click/],
+    [selectedPair().map((tab, i) => ({ ...tab, index: i * 2 })), /next to each other/],
+    [selectedPair().map((tab, i) => ({ ...tab, groupId: i })), /same window and group/],
+    [selectedPair().map((tab, i) => ({ ...tab, pinned: !!i })), /pinned state/],
+    [selectedPair().map((tab, i) => ({ ...tab, windowId: 7 + i })), /same window/],
+    [selectedPair().map((tab, i) => ({ ...tab, splitViewId: i ? 123 : -1 })), /already in split/]
+  ];
+  for (const [tabs, error] of cases) {
+    const app = background((chrome) => {
+      chrome.tabs.query = async () => tabs;
+      chrome.tabs.createSplit = async () => assert.fail("Invalid selections must not split");
+    });
+    await assert.rejects(app.splitSelected({ id: 42, windowId: 7 }), error);
+  }
+});
+
+test("rejects missing context and unsupported split API explicitly", async () => {
+  const app = background((chrome) => { chrome.tabs.query = async () => selectedPair(); });
+  await assert.rejects(app.splitSelected(), /Right-click/);
+  await assert.rejects(app.splitSelected({ id: 42 }), /Right-click/);
+  await assert.rejects(app.splitSelected({ id: 42, windowId: 7 }), /does not support/);
+});
+
+test("compatible pinned grouped tabs can split without URL access", async () => {
+  let split = false;
+  const app = background((chrome) => {
+    chrome.tabs.query = async () => selectedPair().map((tab) => ({ ...tab, groupId: 9, pinned: true }));
+    chrome.tabs.createSplit = async () => { split = true; };
+  });
+  await app.splitSelected({ id: 41, windowId: 7 });
+  assert.equal(split, true);
+});
+
+test("native menu errors open readable extension feedback even for restricted pages", async () => {
+  for (const failure of ["query", "split", "count"]) {
+    const created = [];
+    const app = background((chrome) => {
+      chrome.tabs.query = async () => {
+        if (failure === "query") throw new Error("Selection unavailable");
+        return failure === "count" ? [] : selectedPair();
+      };
+      chrome.tabs.createSplit = async () => { throw new Error("Tab changed"); };
+      chrome.tabs.create = async (options) => { created.push(options); };
+    });
+    app.menu({ menuItemId: "unrelated" }, { id: 42, windowId: 7 });
+    await new Promise(setImmediate);
+    assert.equal(created.length, 0);
+    app.menu({ menuItemId: "split-selected-tabs" }, { id: 42, windowId: 7 });
+    await new Promise(setImmediate);
+    assert.equal(created.length, 1);
+    assert.equal(created[0].windowId, 7);
+    assert.match(created[0].url, /^chrome-extension:\/\/test\/split-error.html\?message=/);
+    assert.equal(app.errors.length, 1);
+    assert.equal(app.injections.length, 0);
+  }
+});
+
+test("error page renders messages as text", () => {
+  const message = {};
+  vm.runInNewContext(source("split-error.js"), {
+    URL,
+    location: { href: "chrome-extension://test/split-error.html?message=%3Cb%3ESelect%20two%3C%2Fb%3E" },
+    document: { getElementById: () => message }
+  });
+  assert.equal(message.textContent, "<b>Select two</b>");
 });
 
 test("copies the exact invoking tab URL and creates a clipboard document", async () => {
