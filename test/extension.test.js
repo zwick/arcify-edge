@@ -15,20 +15,29 @@ function background(overrides = () => {}) {
   const injections = [];
   const warnings = [];
   let listener;
+  let actionListener;
+  let messageListener;
   const chrome = {
     commands: { onCommand: { addListener: (handler) => { listener = handler; } } },
+    action: {
+      onClicked: { addListener: (handler) => { actionListener = handler; } },
+      setBadgeText: async () => {},
+      setTitle: async () => {}
+    },
     tabs: { query: async () => [{ url }] },
     scripting: { executeScript: async (options) => { injections.push(options); } },
     runtime: {
       getURL: (file) => `chrome-extension://test/${file}`,
       getContexts: async () => [],
-      sendMessage: async (message) => { messages.push(message); return { ok: true }; }
+      sendMessage: async (message) => { messages.push(message); return { ok: true }; },
+      onMessage: { addListener: (handler) => { messageListener = handler; } }
     },
     offscreen: { createDocument: async (options) => { documents.push(options); } }
   };
   overrides(chrome);
   const context = vm.createContext({
     chrome,
+    URL,
     console: {
       error: (...args) => errors.push(args),
       warn: (...args) => warnings.push(args)
@@ -38,6 +47,10 @@ function background(overrides = () => {}) {
   return {
     messages, errors, documents, injections, warnings,
     copy: (tab) => context.copyPageUrl(tab),
+    enableDrag: (tab) => context.enableSplitDrag(tab),
+    split: (message, sender) => context.splitPageLink(message, sender),
+    action: (tab) => actionListener(tab),
+    message: (message, sender, respond) => messageListener(message, sender, respond),
     command: (...args) => listener(...args)
   };
 }
@@ -77,6 +90,8 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.commands["copy-page-url"].suggested_key.mac, "Command+Shift+C");
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
   assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting"]);
+  assert.equal(manifest.action.default_title, "Toggle link drag-to-split on this page");
+  assert.equal(manifest.host_permissions, undefined);
   assert.ok(existsSync(path.join(extensionPath, manifest.background.service_worker)));
   assert.match(source("offscreen.html"), /<script src="offscreen.js"><\/script>/);
   assert.match(source("offscreen.html"), /<textarea id="clipboard"/);
@@ -285,4 +300,160 @@ test("toast replaces prior confirmation, stays isolated, and removes itself", ()
   assert.equal(hosts.size, 1);
   timers[1].callback();
   assert.equal(hosts.size, 0);
+});
+
+test("drag mode uses only a user-invoked script on a supported page", async () => {
+  const app = background((chrome) => { chrome.tabs.createSplit = async () => {}; });
+  await app.enableDrag({ id: 42, url });
+  assert.equal(app.injections[0].target.tabId, 42);
+  assert.equal(app.injections[0].files[0], "split-drag.js");
+  await assert.rejects(app.enableDrag({ id: 42, url: "edge://extensions/" }), /HTTP or HTTPS/);
+  assert.equal(app.injections.length, 1);
+});
+
+test("unsupported browsers reject drag mode explicitly", async () => {
+  const app = background();
+  await assert.rejects(app.enableDrag({ id: 42, url }), /does not support/);
+  assert.equal(app.injections.length, 0);
+});
+
+test("left and right drops create adjacent native split tabs", async () => {
+  const created = [];
+  const app = background((chrome) => {
+    chrome.tabs.createSplit = async () => {};
+    chrome.tabs.get = async (id) => ({ id, index: 3, splitViewId: -1 });
+    chrome.tabs.create = async (options) => { created.push(options); };
+  });
+  for (const side of ["left", "right"]) {
+    await app.split({ side, url }, { tab: { id: 42 }, frameId: 0 });
+  }
+  assert.equal(created[0].index, 3);
+  assert.equal(created[1].index, 4);
+  for (const options of created) {
+    assert.equal(options.splitWithTabId, 42);
+    assert.equal(options.url, url);
+  }
+});
+
+test("split requests reject invalid sources, sides, URLs, and existing splits", async () => {
+  const app = background((chrome) => {
+    chrome.tabs.createSplit = async () => {};
+    chrome.tabs.get = async () => ({ id: 42, index: 3, splitViewId: 123 });
+  });
+  const sender = { tab: { id: 42 }, frameId: 0 };
+  await assert.rejects(app.split({ side: "left", url }, {}), /enabled page/);
+  await assert.rejects(app.split({ side: "left", url }, { ...sender, frameId: 2 }), /enabled page/);
+  await assert.rejects(app.split({ side: "up", url }, sender), /left or right/);
+  for (const invalid of ["javascript:alert(1)", "file:///test", "edge://settings/"]) {
+    await assert.rejects(app.split({ side: "left", url: invalid }, sender), /Only HTTP/);
+  }
+  await assert.rejects(app.split({ side: "left", url }, sender), /already in split view/);
+});
+
+test("split message failures are acknowledged and logged", async () => {
+  const app = background();
+  assert.equal(app.message({ type: "other" }, {}, () => {}), undefined);
+  const response = await new Promise((resolve) => {
+    assert.equal(app.message({ type: "split-page-link", side: "left", url }, {}, resolve), true);
+  });
+  assert.equal(response.ok, false);
+  assert.match(response.error, /enabled page/);
+  assert.equal(app.errors.length, 1);
+});
+
+test("toolbar injection errors are visible in the action and logged", async () => {
+  const badges = [];
+  const titles = [];
+  const app = background((chrome) => {
+    chrome.tabs.createSplit = async () => {};
+    chrome.scripting.executeScript = async () => { throw new Error("Cannot access this page"); };
+    chrome.action.setBadgeText = async (options) => { badges.push(options); };
+    chrome.action.setTitle = async (options) => { titles.push(options); };
+  });
+  app.action({ id: 42, url });
+  await new Promise(setImmediate);
+  assert.equal(app.errors.length, 1);
+  assert.equal(badges[0].text, "!");
+  assert.equal(titles[0].title, "Cannot access this page");
+});
+
+test("drag script handles trusted edge drops, errors, cancellation, and toggling", async () => {
+  const listeners = new Map();
+  const nodes = [];
+  const messages = [];
+  const errors = [];
+  let response = { ok: true };
+  class Anchor {
+    href = url;
+  }
+  const document = {
+    createElement: () => {
+      const node = {
+        children: [],
+        style: { setProperty() {} },
+        setAttribute() {},
+        append(...children) { this.children.push(...children); },
+        attachShadow() { this.shadow = document.createElement(); return this.shadow; },
+        remove() { this.removed = true; }
+      };
+      nodes.push(node);
+      return node;
+    },
+    documentElement: { append() {} },
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener: (type, handler) => {
+      assert.equal(listeners.get(type), handler);
+      listeners.delete(type);
+    }
+  };
+  const context = vm.createContext({
+    document, HTMLAnchorElement: Anchor, innerWidth: 1000,
+    setTimeout: () => 1, clearTimeout() {},
+    console: { error: (...args) => errors.push(args) },
+    chrome: { runtime: { sendMessage: async (message) => { messages.push(message); return response; } } }
+  });
+  const event = (overrides = {}) => ({
+    isTrusted: true, clientX: 20, dataTransfer: {},
+    composedPath: () => [new Anchor()],
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+    ...overrides
+  });
+  vm.runInContext(source("split-drag.js"), context);
+  const host = nodes[0];
+  const [, left, right, status] = host.shadow.children;
+  assert.match(status.textContent, /enabled/);
+  listeners.get("dragstart")(event({ isTrusted: false }));
+  await listeners.get("drop")(event());
+  assert.equal(messages.length, 0);
+  listeners.get("dragstart")(event());
+  assert.equal(left.style.display, "flex");
+  assert.equal(right.style.display, "flex");
+  const middle = event({ clientX: 500 });
+  listeners.get("dragover")(middle);
+  assert.equal(middle.prevented, undefined);
+  const edge = event();
+  listeners.get("dragover")(edge);
+  assert.equal(edge.prevented, true);
+  assert.equal(edge.dataTransfer.dropEffect, "copy");
+  await listeners.get("drop")(edge);
+  assert.equal(messages[0].side, "left");
+  assert.equal(messages[0].url, url);
+  assert.equal(edge.stopped, true);
+  assert.equal(left.style.display, "none");
+  assert.equal(status.textContent, "Split view opened");
+  response = { ok: false, error: "Already split" };
+  listeners.get("dragstart")(event());
+  await listeners.get("drop")(event({ clientX: 990 }));
+  assert.equal(messages[1].side, "right");
+  assert.match(status.textContent, /Could not split: Already split/);
+  assert.equal(errors.length, 1);
+  listeners.get("dragstart")(event());
+  listeners.get("keydown")({ key: "Escape" });
+  await listeners.get("drop")(event());
+  assert.equal(messages.length, 2);
+  vm.runInContext(source("split-drag.js"), context);
+  assert.equal(listeners.size, 0);
+  assert.equal(host.removed, true);
+  assert.equal(context.__arcifySplitDrag, undefined);
 });

@@ -7,6 +7,9 @@
   "background": {
     "service_worker": "background.js"
   },
+  "action": {
+    "default_title": "Toggle link drag-to-split on this page"
+  },
   "commands": {
     "copy-page-url": {
       "suggested_key": {
