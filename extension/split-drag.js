@@ -1,13 +1,15 @@
 (() => {
   const key = "__arcifySplitDrag";
-  if (globalThis[key]) {
-    globalThis[key]();
-    return;
-  }
+  if (globalThis[key]) return;
+  globalThis[key] = true;
 
   const host = document.createElement("div");
   host.id = "arcify-edge-split-drag";
   host.style.setProperty("all", "initial", "important");
+  host.style.setProperty("position", "fixed", "important");
+  host.style.setProperty("inset", "0", "important");
+  host.style.setProperty("pointer-events", "none", "important");
+  host.style.setProperty("z-index", "2147483647", "important");
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
   style.textContent = `
@@ -24,13 +26,15 @@
       display: none;
       top: 0;
       bottom: 0;
-      width: 90px;
+      width: min(240px, 30vw);
       align-items: center;
       justify-content: center;
       text-align: center;
       border: 2px solid #8ab4f8;
       background: #202124e6;
     }
+    .edge.active { background: #174ea6ed; }
+    .edge span { pointer-events: none; }
     .left { left: 0; }
     .right { right: 0; }
     .status {
@@ -44,12 +48,16 @@
   `;
   const left = document.createElement("div");
   left.className = "edge left";
-  left.textContent = "Drop to split left";
   const right = document.createElement("div");
   right.className = "edge right";
-  right.textContent = "Drop to split right";
+  for (const [zone, text] of [[left, "Drop to split left"], [right, "Drop to split right"]]) {
+    const label = document.createElement("span");
+    label.textContent = text;
+    zone.append(label);
+  }
   const status = document.createElement("div");
   status.className = "status";
+  status.hidden = true;
   status.setAttribute("role", "status");
   shadow.append(style, left, right, status);
   document.documentElement.append(host);
@@ -65,6 +73,9 @@
   }
   function hideEdges() {
     left.style.display = right.style.display = "none";
+    left.style.pointerEvents = right.style.pointerEvents = "none";
+    left.classList.remove("active");
+    right.classList.remove("active");
     draggedUrl = undefined;
   }
   function dragStart(event) {
@@ -73,14 +84,23 @@
     if (!link || !/^https?:/.test(link.href)) return;
     draggedUrl = link.href;
     left.style.display = right.style.display = "flex";
+    left.style.pointerEvents = right.style.pointerEvents = "auto";
   }
   function sideAt(event) {
-    if (event.clientX < 90) return "left";
-    if (event.clientX > innerWidth - 90) return "right";
+    for (const [zone, side] of [[left, "left"], [right, "right"]]) {
+      const rect = zone.getBoundingClientRect();
+      if (event.clientX >= rect.left && event.clientX <= rect.right &&
+          event.clientY >= rect.top && event.clientY <= rect.bottom) return side;
+    }
   }
   function dragOver(event) {
-    if (!event.isTrusted || !draggedUrl || !sideAt(event)) return;
+    if (!event.isTrusted || !draggedUrl) return;
+    const side = sideAt(event);
+    left.classList.toggle("active", side === "left");
+    right.classList.toggle("active", side === "right");
+    if (!side) return;
     event.preventDefault();
+    event.stopPropagation();
     event.dataTransfer.dropEffect = "copy";
   }
   async function drop(event) {
@@ -108,19 +128,9 @@
   }
 
   document.addEventListener("dragstart", dragStart, true);
+  document.addEventListener("dragenter", dragOver, true);
   document.addEventListener("dragover", dragOver, true);
   document.addEventListener("drop", drop, true);
   document.addEventListener("dragend", hideEdges, true);
   document.addEventListener("keydown", keyDown, true);
-  globalThis[key] = () => {
-    document.removeEventListener("dragstart", dragStart, true);
-    document.removeEventListener("dragover", dragOver, true);
-    document.removeEventListener("drop", drop, true);
-    document.removeEventListener("dragend", hideEdges, true);
-    document.removeEventListener("keydown", keyDown, true);
-    clearTimeout(timer);
-    host.remove();
-    delete globalThis[key];
-  };
-  notify("Drag-to-split enabled. Drag a page link to the left or right edge.");
 })();

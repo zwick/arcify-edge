@@ -117,32 +117,6 @@ async function copyPageUrl(tab) {
   }
 }
 
-chrome.action.onClicked.addListener((tab) => {
-  enableSplitDrag(tab).catch(async (error) => {
-    console.error("Arcify Edge could not enable drag-to-split:", error);
-    await chrome.action.setBadgeText({ tabId: tab.id, text: "!" });
-    await chrome.action.setTitle({ tabId: tab.id, title: error.message });
-  });
-});
-
-async function enableSplitDrag(tab) {
-  if (typeof chrome.tabs.createSplit !== "function") {
-    throw new Error("This browser does not support native split-view extensions.");
-  }
-  if (!Number.isInteger(tab.id) || !/^https?:/.test(tab.url ?? "")) {
-    throw new Error("Enable drag-to-split on an HTTP or HTTPS page.");
-  }
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ["split-drag.js"]
-  });
-  await chrome.action.setBadgeText({ tabId: tab.id, text: "" });
-  await chrome.action.setTitle({
-    tabId: tab.id,
-    title: "Toggle link drag-to-split on this page"
-  });
-}
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== "split-page-link") return;
   splitPageLink(message, sender).then(
@@ -157,7 +131,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function splitPageLink(message, sender) {
   if (!Number.isInteger(sender.tab?.id) || sender.frameId !== 0) {
-    throw new Error("Drag a link from the enabled page.");
+    throw new Error("Drag a link from the main page.");
   }
   if (message.side !== "left" && message.side !== "right") {
     throw new Error("Choose the left or right edge.");

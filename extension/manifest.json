@@ -7,9 +7,13 @@
   "background": {
     "service_worker": "background.js"
   },
-  "action": {
-    "default_title": "Toggle link drag-to-split on this page"
-  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["split-drag.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "commands": {
     "copy-page-url": {
       "suggested_key": {
