@@ -79,7 +79,105 @@ function ensureOffscreenDocument() {
   return creatingOffscreen;
 }
 
+const mruDirections = { "mru-next": 1, "mru-previous": -1 };
+const mruLimit = 7;
+const mruFallbackDelay = 900;
+let mruCycle;
+let mruQueue = Promise.resolve();
+
+function queueMru(task) {
+  mruQueue = mruQueue.then(task).catch((error) => {
+    console.error("Arcify Edge could not switch recent tabs:", error);
+  });
+  return mruQueue;
+}
+
+async function recentTabs(activeTab) {
+  const tabs = await chrome.tabs.query({ windowId: activeTab.windowId });
+  const current = tabs.find((tab) => tab.id === activeTab.id) ?? activeTab;
+  const others = tabs
+    .filter((tab) => tab.id !== activeTab.id)
+    .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+  return [current, ...others].slice(0, mruLimit).map((tab) => ({
+    id: tab.id,
+    title: tab.title || tab.url || "Untitled tab",
+    url: tab.url ?? "",
+    favIconUrl: tab.favIconUrl ?? ""
+  }));
+}
+
+async function cycleMru(direction, tab) {
+  const activeTab = tab ?? (await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true
+  }))[0];
+  if (!Number.isInteger(activeTab?.id)) {
+    throw new Error("The active tab is unavailable.");
+  }
+  if (mruCycle?.sourceTabId !== activeTab.id) {
+    clearTimeout(mruCycle?.timer);
+    mruCycle = { sourceTabId: activeTab.id, tabs: await recentTabs(activeTab), index: 0 };
+  }
+  const cycle = mruCycle;
+  if (cycle.tabs.length < 2) {
+    mruCycle = undefined;
+    return;
+  }
+  clearTimeout(cycle.timer);
+  cycle.index = (cycle.index + direction + cycle.tabs.length) % cycle.tabs.length;
+  const state = await showMruSwitcher(cycle);
+  if (mruCycle !== cycle) return;
+  if (state === "released") return commitMru(cycle);
+  if (state === "unavailable") {
+    cycle.timer = setTimeout(() => queueMru(() => commitMru(cycle)), mruFallbackDelay);
+  }
+}
+
+async function showMruSwitcher(cycle) {
+  if (cycle.unavailable) return "unavailable";
+  const message = { type: "mru-switcher-show", tabs: cycle.tabs, index: cycle.index };
+  for (const inject of [false, true]) {
+    try {
+      if (inject) {
+        await chrome.scripting.executeScript({
+          target: { tabId: cycle.sourceTabId },
+          files: ["mru-switcher.js"]
+        });
+      }
+      const response = await chrome.tabs.sendMessage(cycle.sourceTabId, message, { frameId: 0 });
+      if (response?.ok) return response.held ? "shown" : "released";
+    } catch {
+      // Restricted pages cannot host the switcher; fall back to an idle timer.
+    }
+  }
+  cycle.unavailable = true;
+  return "unavailable";
+}
+
+async function commitMru(cycle) {
+  if (mruCycle !== cycle) return;
+  mruCycle = undefined;
+  clearTimeout(cycle.timer);
+  if (cycle.index === 0) return;
+  await chrome.tabs.update(cycle.tabs[cycle.index].id, { active: true });
+}
+
+function handleMruMessage(message, sender) {
+  const cycle = mruCycle;
+  if (!cycle || sender.tab?.id !== cycle.sourceTabId) return;
+  if (message.type === "mru-switcher-commit") return queueMru(() => commitMru(cycle));
+  return queueMru(() => {
+    if (mruCycle !== cycle) return;
+    clearTimeout(cycle.timer);
+    mruCycle = undefined;
+  });
+}
+
 chrome.commands.onCommand.addListener((command, tab) => {
+  if (Object.hasOwn(mruDirections, command)) {
+    queueMru(() => cycleMru(mruDirections[command], tab));
+    return;
+  }
   if (command !== "copy-page-url") return;
 
   copyPageUrl(tab).catch((error) => {
@@ -118,6 +216,10 @@ async function copyPageUrl(tab) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "mru-switcher-commit" || message?.type === "mru-switcher-cancel") {
+    handleMruMessage(message, sender);
+    return;
+  }
   if (message?.type !== "split-page-link") return;
   splitPageLink(message, sender).then(
     () => sendResponse({ ok: true }),

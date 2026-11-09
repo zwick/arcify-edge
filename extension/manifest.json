@@ -2,15 +2,28 @@
   "manifest_version": 3,
   "name": "Arcify Edge",
   "version": "1.0.0",
-  "description": "Copy the active page URL with Command+Shift+C.",
-  "permissions": ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus"],
+  "description": "Arc-style shortcuts for Edge: copy the page URL, switch recent tabs, and split views.",
+  "permissions": [
+    "activeTab",
+    "clipboardWrite",
+    "offscreen",
+    "scripting",
+    "contextMenus",
+    "tabs"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["split-drag.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "split-drag.js",
+        "mru-switcher.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -21,6 +34,20 @@
         "mac": "Command+Shift+C"
       },
       "description": "Copy the active page URL"
+    },
+    "mru-next": {
+      "suggested_key": {
+        "default": "Ctrl+E",
+        "mac": "Command+E"
+      },
+      "description": "Switch to the next most recently used tab"
+    },
+    "mru-previous": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      },
+      "description": "Switch to the previous most recently used tab"
     }
   }
 }

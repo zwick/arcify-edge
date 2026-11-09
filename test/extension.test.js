@@ -37,9 +37,12 @@ function background(overrides = () => {}) {
     offscreen: { createDocument: async (options) => { documents.push(options); } }
   };
   overrides(chrome);
+  const timers = [];
   const context = vm.createContext({
     chrome,
     URL,
+    setTimeout: (callback, delay) => timers.push({ callback, delay }),
+    clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cleared = true; },
     console: {
       error: (...args) => errors.push(args),
       warn: (...args) => warnings.push(args)
@@ -47,14 +50,15 @@ function background(overrides = () => {}) {
   });
   vm.runInContext(source("background.js"), context);
   return {
-    messages, errors, documents, injections, warnings, menus,
+    messages, errors, documents, injections, warnings, menus, timers,
     install: () => installedListener(),
     menu: (info, tab) => menuListener(info, tab),
     splitSelected: (tab) => context.splitSelectedTabs(tab),
     copy: (tab) => context.copyPageUrl(tab),
     split: (message, sender) => context.splitPageLink(message, sender),
     message: (message, sender, respond) => messageListener(message, sender, respond),
-    command: (...args) => listener(...args)
+    command: (...args) => listener(...args),
+    idle: () => context.queueMru(() => {})
   };
 }
 
@@ -92,10 +96,12 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.commands["copy-page-url"].suggested_key.mac, "Command+Shift+C");
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
-  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus"]);
+  assert.deepEqual(manifest.commands["mru-next"].suggested_key, { default: "Ctrl+E", mac: "Command+E" });
+  assert.deepEqual(manifest.commands["mru-previous"].suggested_key, { default: "Ctrl+Shift+E", mac: "Command+Shift+E" });
+  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus", "tabs"]);
   assert.equal(manifest.action, undefined);
   assert.deepEqual(manifest.content_scripts, [{
-    matches: ["http://*/*", "https://*/*"], js: ["split-drag.js"], run_at: "document_idle"
+    matches: ["http://*/*", "https://*/*"], js: ["split-drag.js", "mru-switcher.js"], run_at: "document_idle"
   }]);
   assert.equal(manifest.host_permissions, undefined);
   assert.ok(existsSync(path.join(extensionPath, manifest.background.service_worker)));
@@ -562,4 +568,205 @@ test("automatic drag script handles full zones, boundaries, errors, and cancella
   assert.equal(nodes[0], host);
   assert.equal(host.removed, undefined);
   assert.equal(context.__arcifySplitDrag, true);
+});
+
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const windowTabs = (count) => Array.from({ length: count }, (_, i) => ({
+  id: 100 + i, windowId: 7, title: `Tab ${i}`, url: `https://site${i}.test/`, lastAccessed: 1000 - i * 10
+}));
+
+function mruApp(tabs, respond = () => ({ ok: true, held: true })) {
+  const shown = [];
+  const activated = [];
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => {
+      assert.equal(options.windowId, 7);
+      return tabs;
+    };
+    chrome.tabs.sendMessage = async (tabId, message, options) => {
+      assert.equal(options.frameId, 0);
+      shown.push({ tabId, ...message });
+      return respond(message);
+    };
+    chrome.tabs.update = async (id, options) => { activated.push([id, options.active]); };
+  });
+  return { ...app, shown, activated };
+}
+
+test("recent tabs start with the active tab, follow last access, and cap at seven", async () => {
+  const tabs = windowTabs(10).reverse();
+  tabs.push({ id: 200, windowId: 7, url: "edge://newtab/" });
+  const app = mruApp(tabs);
+  app.command("mru-next", { id: 105, windowId: 7 });
+  await app.idle();
+  const ids = app.shown[0].tabs.map((tab) => tab.id);
+  assert.deepEqual(plain(ids), [105, 100, 101, 102, 103, 104, 106]);
+  assert.equal(app.shown[0].tabId, 105);
+  assert.equal(app.shown[0].tabs[0].title, "Tab 5");
+});
+
+test("forward and backward presses cycle through recent tabs and wrap to the start", async () => {
+  const app = mruApp(windowTabs(9));
+  const indexes = [];
+  for (const command of [...Array(7).fill("mru-next"), "mru-previous", "mru-previous"]) {
+    app.command(command, { id: 100, windowId: 7 });
+    await app.idle();
+    indexes.push(app.shown.at(-1).index);
+  }
+  assert.deepEqual(indexes, [1, 2, 3, 4, 5, 6, 0, 6, 5]);
+  const fresh = mruApp(windowTabs(3));
+  fresh.command("mru-previous", { id: 100, windowId: 7 });
+  await fresh.idle();
+  assert.equal(fresh.shown[0].index, 2);
+});
+
+test("releasing the modifier activates the selected tab only for the showing tab", async () => {
+  const app = mruApp(windowTabs(4));
+  app.command("mru-next", { id: 100, windowId: 7 });
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  app.message({ type: "mru-switcher-commit" }, { tab: { id: 999 } }, () => {});
+  await app.idle();
+  assert.deepEqual(plain(app.activated), []);
+  app.message({ type: "mru-switcher-commit" }, { tab: { id: 100 } }, () => {});
+  await app.idle();
+  assert.deepEqual(plain(app.activated), [[102, true]]);
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  assert.equal(app.shown.at(-1).index, 1);
+});
+
+test("cancelling or wrapping to the start keeps the current tab", async () => {
+  const app = mruApp(windowTabs(2));
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  app.message({ type: "mru-switcher-cancel" }, { tab: { id: 100 } }, () => {});
+  await app.idle();
+  app.command("mru-next", { id: 100, windowId: 7 });
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  app.message({ type: "mru-switcher-commit" }, { tab: { id: 100 } }, () => {});
+  await app.idle();
+  assert.deepEqual(plain(app.activated), []);
+});
+
+test("a quick tap released before the switcher appears switches immediately", async () => {
+  const app = mruApp(windowTabs(3), () => ({ ok: true, held: false }));
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  assert.deepEqual(plain(app.activated), [[101, true]]);
+});
+
+test("pages without the switcher get it injected, and restricted pages switch after a pause", async () => {
+  const app = mruApp(windowTabs(3), () => { throw new Error("No receiver"); });
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  assert.equal(app.injections[0].files[0], "mru-switcher.js");
+  assert.equal(app.injections[0].target.tabId, 100);
+  assert.equal(app.timers.length, 1);
+  app.command("mru-next", { id: 100, windowId: 7 });
+  await app.idle();
+  assert.equal(app.injections.length, 1);
+  assert.equal(app.timers[0].cleared, true);
+  app.timers[1].callback();
+  await app.idle();
+  assert.deepEqual(plain(app.activated), [[102, true]]);
+});
+
+test("single-tab windows and unrelated commands do nothing", async () => {
+  const app = mruApp(windowTabs(1));
+  app.command("mru-next", { id: 100, windowId: 7 });
+  app.command("unrelated", { id: 100, windowId: 7 });
+  await app.idle();
+  assert.equal(app.shown.length, 0);
+  assert.equal(app.errors.length, 0);
+});
+
+function switcherPage() {
+  const windowListeners = new Map();
+  const documentListeners = new Map();
+  const sent = [];
+  let onMessage;
+  let attached;
+  const element = (tag) => ({
+    tag, children: [], attributes: {}, style: { setProperty() {} },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    attachShadow() { this.shadow = element("shadow"); return this.shadow; },
+    get isConnected() { return attached === this; },
+    remove() { if (attached === this) attached = undefined; }
+  });
+  const document = {
+    visibilityState: "visible",
+    createElement: element,
+    documentElement: { append: (node) => { attached = node; } },
+    addEventListener: (type, handler) => documentListeners.set(type, handler)
+  };
+  const context = vm.createContext({
+    document, URL,
+    addEventListener: (type, handler) => windowListeners.set(type, handler),
+    chrome: { runtime: {
+      sendMessage: async (message) => { sent.push(message); },
+      onMessage: { addListener: (handler) => { onMessage = handler; } }
+    } }
+  });
+  vm.runInContext(source("mru-switcher.js"), context);
+  vm.runInContext(source("mru-switcher.js"), context);
+  const key = (type, overrides) => windowListeners.get(type)({
+    isTrusted: true, metaKey: false, ctrlKey: false, altKey: false,
+    preventDefault() {}, stopPropagation() {}, ...overrides
+  });
+  const show = (index = 1) => {
+    let response;
+    onMessage({ type: "mru-switcher-show", index, tabs: [
+      { title: "<b>One</b>", url: "https://one.test/a", favIconUrl: "https://one.test/icon.png" },
+      { title: "Two", url: "edge://settings/", favIconUrl: "javascript:alert(1)" }
+    ] }, {}, (value) => { response = value; });
+    return response;
+  };
+  const rows = () => attached?.shadow.children[1].children ?? [];
+  return { key, show, rows, sent, documentListeners, attached: () => attached };
+}
+
+test("switcher shows tabs as text while the modifier is held and commits on release", () => {
+  const page = switcherPage();
+  page.key("keydown", { key: "Meta", metaKey: true });
+  assert.deepEqual(plain(page.show(1)), { ok: true, held: true });
+  const [first, second] = page.rows();
+  assert.equal(first.attributes["aria-selected"], "false");
+  assert.equal(second.attributes["aria-selected"], "true");
+  assert.equal(first.children[1].children[0].textContent, "<b>One</b>");
+  assert.equal(first.children[1].children[1].textContent, "one.test");
+  assert.equal(first.children[0].src, "https://one.test/icon.png");
+  assert.equal(second.children[0].tag, "span");
+  page.show(0);
+  assert.equal(page.rows()[0].attributes["aria-selected"], "true");
+  page.key("keyup", { key: "k", metaKey: true });
+  assert.equal(page.sent.length, 0);
+  page.key("keyup", { key: "Meta" });
+  assert.equal(page.attached(), undefined);
+  assert.deepEqual(plain(page.sent), [{ type: "mru-switcher-commit" }]);
+});
+
+test("switcher reports early releases, works with any remapped modifier, and cancels", () => {
+  const page = switcherPage();
+  page.key("keyup", { key: "Meta" });
+  assert.deepEqual(plain(page.show()), { ok: true, held: false });
+  assert.equal(page.attached(), undefined);
+  page.key("keydown", { key: "Alt", altKey: true });
+  page.show();
+  page.key("keydown", { key: "Escape", altKey: true });
+  assert.deepEqual(plain(page.sent), [{ type: "mru-switcher-cancel" }]);
+  page.key("keydown", { key: "Control", ctrlKey: true });
+  page.show();
+  page.key("keydown", { key: "Control", ctrlKey: true, isTrusted: false });
+  page.key("keyup", { key: "Control", isTrusted: false });
+  assert.equal(page.sent.length, 1);
+  page.documentListeners.get("visibilitychange")();
+  assert.equal(page.sent.length, 1);
+  page.key("blur", {});
+  assert.deepEqual(plain(page.sent.at(-1)), { type: "mru-switcher-cancel" });
+  assert.deepEqual(plain(page.show()), { ok: true, held: true });
 });
