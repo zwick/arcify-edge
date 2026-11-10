@@ -47,6 +47,7 @@
         border-radius: 8px;
       }
       li[aria-selected="true"] { background: #174ea6; }
+      .icons { flex: none; display: flex; gap: 4px; }
       .icon {
         flex: none;
         width: 16px;
@@ -77,36 +78,43 @@
     }
   }
 
-  function row(tab, selected) {
-    const item = document.createElement("li");
-    item.setAttribute("role", "option");
-    item.setAttribute("aria-selected", String(selected));
+  function favicon(pane) {
     let icon;
-    if (/^(https?:|data:image\/)/.test(tab.favIconUrl ?? "")) {
+    if (/^(https?:|data:image\/)/.test(pane.favIconUrl ?? "")) {
       icon = document.createElement("img");
-      icon.src = tab.favIconUrl;
+      icon.src = pane.favIconUrl;
       icon.alt = "";
       icon.onerror = () => { icon.removeAttribute("src"); };
     } else {
       icon = document.createElement("span");
     }
     icon.className = "icon";
+    return icon;
+  }
+
+  function row(entry, selected) {
+    const item = document.createElement("li");
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(selected));
+    const icons = document.createElement("div");
+    icons.className = "icons";
+    icons.append(...entry.panes.map(favicon));
     const text = document.createElement("div");
     text.className = "text";
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = tab.title;
+    title.textContent = entry.panes.map((pane) => pane.title).join(" | ");
     const site = document.createElement("div");
     site.className = "host";
-    site.textContent = hostname(tab.url);
+    site.textContent = entry.panes.map((pane) => hostname(pane.url)).join(" | ");
     text.append(title, site);
-    item.append(icon, text);
+    item.append(icons, text);
     return item;
   }
 
-  function render(tabs, index) {
+  function render(entries, index) {
     if (!host) build();
-    list.replaceChildren(...tabs.map((tab, i) => row(tab, i === index)));
+    list.replaceChildren(...entries.map((entry, i) => row(entry, i === index)));
     if (!host.isConnected) document.documentElement.append(host);
     visible = true;
   }

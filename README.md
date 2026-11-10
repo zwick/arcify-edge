@@ -30,7 +30,7 @@ This adds only the `contextMenus` permission. See the [native tab-menu context](
 
 ## Switch recent tabs
 
-Hold **Cmd** and tap **E** to move forward through the current window's 7 most recently used tabs, or **Shift+E** to move backward (starting from the 7th). Windows/Linux use **Ctrl+E** / **Ctrl+Shift+E**. These replace Edge's address-bar and sidebar search shortcuts (**Cmd+L** still focuses the address bar). A list shows which tab is selected while the modifier is held; release to switch, or press **Escape** to stay. Past the last tab, selection returns to the current tab. A quick tap jumps straight to the previous tab.
+Hold **Cmd** and tap **E** to move forward through the current window's 7 most recently used tabs, or **Shift+E** to move backward (starting from the 7th). Windows/Linux use **Ctrl+E** / **Ctrl+Shift+E**. These replace Edge's address-bar and sidebar search shortcuts (**Cmd+L** still focuses the address bar). A list shows which tab is selected while the modifier is held; release to switch, or press **Escape** to stay. Past the last tab, selection returns to the current tab. A quick tap jumps straight to the previous tab. A split view counts as one entry, listed as **Left | Right**; switching to it restores the split with the most recently used pane focused.
 
 Remap either shortcut at `edge://extensions/shortcuts` (**Switch to the next/previous most recently used tab**). Any Cmd, Ctrl, or Option/Alt combination works, because the list closes when all of those modifiers are released. Edge reserves **Ctrl+Tab** and does not allow extensions to use the Tab key, so it cannot be assigned.
 

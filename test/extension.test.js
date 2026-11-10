@@ -602,7 +602,33 @@ test("recent tabs start with the active tab, follow last access, and cap at seve
   const ids = app.shown[0].tabs.map((tab) => tab.id);
   assert.deepEqual(plain(ids), [105, 100, 101, 102, 103, 104, 106]);
   assert.equal(app.shown[0].tabId, 105);
-  assert.equal(app.shown[0].tabs[0].title, "Tab 5");
+  assert.equal(app.shown[0].tabs[0].panes[0].title, "Tab 5");
+});
+
+test("split views form one left-to-right entry ranked by their latest pane", async () => {
+  const tabs = [
+    { id: 1, windowId: 7, index: 0, title: "Solo", url: "https://solo.test/", lastAccessed: 500, splitViewId: -1 },
+    { id: 2, windowId: 7, index: 1, title: "Left", url: "https://left.test/", lastAccessed: 100, splitViewId: 9 },
+    { id: 3, windowId: 7, index: 2, title: "Right", url: "https://right.test/", lastAccessed: 900, splitViewId: 9 },
+    { id: 4, windowId: 7, index: 3, title: "Old", url: "https://old.test/", lastAccessed: 50 },
+    { id: 5, windowId: 7, index: 4, title: "Current", url: "https://current.test/", lastAccessed: 1000 }
+  ];
+  const app = mruApp(tabs);
+  app.command("mru-next", { id: 5, windowId: 7 });
+  await app.idle();
+  const entries = plain(app.shown[0].tabs);
+  assert.deepEqual(entries.map((entry) => entry.id), [5, 3, 1, 4]);
+  assert.deepEqual(entries[1].panes.map((pane) => pane.title), ["Left", "Right"]);
+  app.message({ type: "mru-switcher-commit" }, { tab: { id: 5 } }, () => {});
+  await app.idle();
+  assert.deepEqual(plain(app.activated), [[3, true]]);
+
+  const inside = mruApp(tabs);
+  inside.command("mru-next", { id: 2, windowId: 7 });
+  await inside.idle();
+  const fromSplit = plain(inside.shown[0].tabs);
+  assert.deepEqual(fromSplit.map((entry) => entry.panes.length), [2, 1, 1, 1]);
+  assert.deepEqual(fromSplit.slice(1).map((entry) => entry.id), [5, 1, 4]);
 });
 
 test("forward and backward presses cycle through recent tabs and wrap to the start", async () => {
@@ -721,8 +747,11 @@ function switcherPage() {
   const show = (index = 1) => {
     let response;
     onMessage({ type: "mru-switcher-show", index, tabs: [
-      { title: "<b>One</b>", url: "https://one.test/a", favIconUrl: "https://one.test/icon.png" },
-      { title: "Two", url: "edge://settings/", favIconUrl: "javascript:alert(1)" }
+      { id: 1, panes: [{ title: "<b>One</b>", url: "https://one.test/a", favIconUrl: "https://one.test/icon.png" }] },
+      { id: 2, panes: [
+        { title: "Two", url: "edge://settings/", favIconUrl: "javascript:alert(1)" },
+        { title: "Three", url: "https://three.test/", favIconUrl: "https://three.test/icon.png" }
+      ] }
     ] }, {}, (value) => { response = value; });
     return response;
   };
@@ -739,8 +768,11 @@ test("switcher shows tabs as text while the modifier is held and commits on rele
   assert.equal(second.attributes["aria-selected"], "true");
   assert.equal(first.children[1].children[0].textContent, "<b>One</b>");
   assert.equal(first.children[1].children[1].textContent, "one.test");
-  assert.equal(first.children[0].src, "https://one.test/icon.png");
-  assert.equal(second.children[0].tag, "span");
+  assert.equal(first.children[0].children.length, 1);
+  assert.equal(first.children[0].children[0].src, "https://one.test/icon.png");
+  assert.equal(second.children[1].children[0].textContent, "Two | Three");
+  assert.equal(second.children[1].children[1].textContent, "settings | three.test");
+  assert.deepEqual(second.children[0].children.map((icon) => icon.tag), ["span", "img"]);
   page.show(0);
   assert.equal(page.rows()[0].attributes["aria-selected"], "true");
   page.key("keyup", { key: "k", metaKey: true });
