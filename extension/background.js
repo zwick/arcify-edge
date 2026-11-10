@@ -97,6 +97,24 @@ const viewKey = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1
   ? `split:${tab.splitViewId}`
   : `tab:${tab.id}`;
 
+// Reads Edge's favicon cache, which also covers unloaded or discarded tabs.
+async function faviconData(pageUrl) {
+  if (!pageUrl) return "";
+  try {
+    const url = new URL(chrome.runtime.getURL("_favicon/"));
+    url.searchParams.set("pageUrl", pageUrl);
+    url.searchParams.set("size", "32");
+    const response = await fetch(url);
+    if (!response.ok) return "";
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `data:image/png;base64,${btoa(binary)}`;
+  } catch {
+    return "";
+  }
+}
+
 // Each entry is one tab, or both panes of a split view shown left to right.
 async function recentTabs(activeTab) {
   const tabs = await chrome.tabs.query({ windowId: activeTab.windowId });
@@ -112,14 +130,14 @@ async function recentTabs(activeTab) {
   views.delete(currentKey);
   const newest = (view) => Math.max(...view.map(lastUsed));
   const others = [...views.values()].sort((a, b) => newest(b) - newest(a));
-  return [currentView, ...others].slice(0, mruLimit).map((view) => ({
+  return Promise.all([currentView, ...others].slice(0, mruLimit).map(async (view) => ({
     id: view.reduce((a, b) => (lastUsed(b) > lastUsed(a) ? b : a)).id,
-    panes: [...view].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((tab) => ({
+    panes: await Promise.all([...view].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map(async (tab) => ({
       title: tab.title || tab.url || "Untitled tab",
       url: tab.url ?? "",
-      favIconUrl: tab.favIconUrl ?? ""
-    }))
-  }));
+      icon: await faviconData(tab.url)
+    })))
+  })));
 }
 
 async function cycleMru(direction, tab) {

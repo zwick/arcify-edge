@@ -54,8 +54,8 @@
         height: 16px;
         border-radius: 4px;
         background: #5f6368;
-        object-fit: contain;
       }
+      .icon.loaded { background: none; }
       .text { min-width: 0; }
       .title, .host {
         overflow: hidden;
@@ -78,18 +78,20 @@
     }
   }
 
+  // Drawn on a canvas so page image policies (CSP img-src) cannot block it.
   function favicon(pane) {
-    let icon;
-    if (/^(https?:|data:image\/)/.test(pane.favIconUrl ?? "")) {
-      icon = document.createElement("img");
-      icon.src = pane.favIconUrl;
-      icon.alt = "";
-      icon.onerror = () => { icon.removeAttribute("src"); };
-    } else {
-      icon = document.createElement("span");
+    const canvas = document.createElement("canvas");
+    canvas.className = "icon";
+    canvas.width = canvas.height = 32;
+    const data = /^data:image\/png;base64,([A-Za-z0-9+/]+=*)$/.exec(pane.icon ?? "")?.[1];
+    if (data) {
+      const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+      createImageBitmap(new Blob([bytes], { type: "image/png" })).then((bitmap) => {
+        canvas.getContext("2d").drawImage(bitmap, 0, 0, 32, 32);
+        canvas.classList.add("loaded");
+      }).catch(() => {});
     }
-    icon.className = "icon";
-    return icon;
+    return canvas;
   }
 
   function row(entry, selected) {
