@@ -36,11 +36,16 @@ function background(overrides = () => {}) {
     },
     offscreen: { createDocument: async (options) => { documents.push(options); } }
   };
-  overrides(chrome);
+  const env = {
+    fetch: async (request) => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer, request })
+  };
+  overrides(chrome, env);
   const timers = [];
   const context = vm.createContext({
     chrome,
     URL,
+    btoa,
+    fetch: (...args) => env.fetch(...args),
     setTimeout: (callback, delay) => timers.push({ callback, delay }),
     clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cleared = true; },
     console: {
@@ -98,7 +103,7 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
   assert.deepEqual(manifest.commands["mru-next"].suggested_key, { default: "Ctrl+E", mac: "Command+E" });
   assert.deepEqual(manifest.commands["mru-previous"].suggested_key, { default: "Ctrl+Shift+E", mac: "Command+Shift+E" });
-  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus", "tabs"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus", "tabs", "favicon"]);
   assert.equal(manifest.action, undefined);
   assert.deepEqual(manifest.content_scripts, [{
     matches: ["http://*/*", "https://*/*"], js: ["split-drag.js", "mru-switcher.js"], run_at: "document_idle"
@@ -602,7 +607,59 @@ test("recent tabs start with the active tab, follow last access, and cap at seve
   const ids = app.shown[0].tabs.map((tab) => tab.id);
   assert.deepEqual(plain(ids), [105, 100, 101, 102, 103, 104, 106]);
   assert.equal(app.shown[0].tabId, 105);
-  assert.equal(app.shown[0].tabs[0].title, "Tab 5");
+  assert.equal(app.shown[0].tabs[0].panes[0].title, "Tab 5");
+});
+
+test("split views form one left-to-right entry ranked by their latest pane", async () => {
+  const tabs = [
+    { id: 1, windowId: 7, index: 0, title: "Solo", url: "https://solo.test/", lastAccessed: 500, splitViewId: -1 },
+    { id: 2, windowId: 7, index: 1, title: "Left", url: "https://left.test/", lastAccessed: 100, splitViewId: 9 },
+    { id: 3, windowId: 7, index: 2, title: "Right", url: "https://right.test/", lastAccessed: 900, splitViewId: 9 },
+    { id: 4, windowId: 7, index: 3, title: "Old", url: "https://old.test/", lastAccessed: 50 },
+    { id: 5, windowId: 7, index: 4, title: "Current", url: "https://current.test/", lastAccessed: 1000 }
+  ];
+  const app = mruApp(tabs);
+  app.command("mru-next", { id: 5, windowId: 7 });
+  await app.idle();
+  const entries = plain(app.shown[0].tabs);
+  assert.deepEqual(entries.map((entry) => entry.id), [5, 3, 1, 4]);
+  assert.deepEqual(entries[1].panes.map((pane) => pane.title), ["Left", "Right"]);
+  assert.equal(entries[1].panes[0].icon, "data:image/png;base64,AQID");
+  app.message({ type: "mru-switcher-commit" }, { tab: { id: 5 } }, () => {});
+  await app.idle();
+  assert.deepEqual(plain(app.activated), [[3, true]]);
+
+  const inside = mruApp(tabs);
+  inside.command("mru-next", { id: 2, windowId: 7 });
+  await inside.idle();
+  const fromSplit = plain(inside.shown[0].tabs);
+  assert.deepEqual(fromSplit.map((entry) => entry.panes.length), [2, 1, 1, 1]);
+  assert.deepEqual(fromSplit.slice(1).map((entry) => entry.id), [5, 1, 4]);
+});
+
+test("favicons come from the browser cache and fall back to blank on failure", async () => {
+  const requests = [];
+  const app = background((chrome, env) => {
+    chrome.tabs.query = async () => [
+      { id: 1, windowId: 7, url: "https://a.test/page?q=1" },
+      { id: 2, windowId: 7, url: "https://broken.test/" },
+      { id: 3, windowId: 7, url: "https://missing.test/" },
+      { id: 4, windowId: 7 }
+    ];
+    chrome.tabs.sendMessage = async (tabId, message) => { requests.push(message); return { ok: true, held: true }; };
+    env.fetch = async (url) => {
+      requests.push(url.toString());
+      if (url.searchParams.get("pageUrl").includes("broken")) throw new Error("offline");
+      if (url.searchParams.get("pageUrl").includes("missing")) return { ok: false };
+      return { ok: true, arrayBuffer: async () => new Uint8Array([255, 0]).buffer };
+    };
+  });
+  app.command("mru-next", { id: 1, windowId: 7 });
+  await app.idle();
+  assert.equal(requests[0], "chrome-extension://test/_favicon/?pageUrl=https%3A%2F%2Fa.test%2Fpage%3Fq%3D1&size=32");
+  assert.equal(requests.length, 4);
+  const icons = plain(requests.at(-1).tabs).map((entry) => entry.panes[0].icon);
+  assert.deepEqual(icons, ["data:image/png;base64,/wA=", "", "", ""]);
 });
 
 test("forward and backward presses cycle through recent tabs and wrap to the start", async () => {
@@ -688,16 +745,20 @@ function switcherPage() {
   const sent = [];
   let onMessage;
   let attached;
-  const element = (tag) => ({
-    tag, children: [], attributes: {}, style: { setProperty() {} },
-    setAttribute(name, value) { this.attributes[name] = value; },
-    removeAttribute(name) { delete this.attributes[name]; },
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; },
-    attachShadow() { this.shadow = element("shadow"); return this.shadow; },
-    get isConnected() { return attached === this; },
-    remove() { if (attached === this) attached = undefined; }
-  });
+  const element = (tag) => {
+    const names = [];
+    return {
+      tag, children: [], attributes: {}, drawn: [], names, style: { setProperty() {} },
+      classList: { add: (name) => names.push(name) },
+      getContext() { return { drawImage: (bitmap, ...size) => this.drawn.push([bitmap, ...size]) }; },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      attachShadow() { this.shadow = element("shadow"); return this.shadow; },
+      get isConnected() { return attached === this; },
+      remove() { if (attached === this) attached = undefined; }
+    };
+  };
   const document = {
     visibilityState: "visible",
     createElement: element,
@@ -705,7 +766,8 @@ function switcherPage() {
     addEventListener: (type, handler) => documentListeners.set(type, handler)
   };
   const context = vm.createContext({
-    document, URL,
+    document, URL, atob, Blob,
+    createImageBitmap: async (blob) => ({ bytes: [...new Uint8Array(await blob.arrayBuffer())], type: blob.type }),
     addEventListener: (type, handler) => windowListeners.set(type, handler),
     chrome: { runtime: {
       sendMessage: async (message) => { sent.push(message); },
@@ -721,8 +783,11 @@ function switcherPage() {
   const show = (index = 1) => {
     let response;
     onMessage({ type: "mru-switcher-show", index, tabs: [
-      { title: "<b>One</b>", url: "https://one.test/a", favIconUrl: "https://one.test/icon.png" },
-      { title: "Two", url: "edge://settings/", favIconUrl: "javascript:alert(1)" }
+      { id: 1, panes: [{ title: "<b>One</b>", url: "https://one.test/a", icon: "data:image/png;base64,AQID" }] },
+      { id: 2, panes: [
+        { title: "Two", url: "edge://settings/", icon: "" },
+        { title: "Three", url: "https://three.test/", icon: "https://three.test/icon.png" }
+      ] }
     ] }, {}, (value) => { response = value; });
     return response;
   };
@@ -730,7 +795,7 @@ function switcherPage() {
   return { key, show, rows, sent, documentListeners, attached: () => attached };
 }
 
-test("switcher shows tabs as text while the modifier is held and commits on release", () => {
+test("switcher shows tabs as text while the modifier is held and commits on release", async () => {
   const page = switcherPage();
   page.key("keydown", { key: "Meta", metaKey: true });
   assert.deepEqual(plain(page.show(1)), { ok: true, held: true });
@@ -739,8 +804,15 @@ test("switcher shows tabs as text while the modifier is held and commits on rele
   assert.equal(second.attributes["aria-selected"], "true");
   assert.equal(first.children[1].children[0].textContent, "<b>One</b>");
   assert.equal(first.children[1].children[1].textContent, "one.test");
-  assert.equal(first.children[0].src, "https://one.test/icon.png");
-  assert.equal(second.children[0].tag, "span");
+  await new Promise(setImmediate);
+  const [icon] = first.children[0].children;
+  assert.equal(first.children[0].children.length, 1);
+  assert.equal(icon.tag, "canvas");
+  assert.deepEqual(plain(icon.drawn), [[{ bytes: [1, 2, 3], type: "image/png" }, 0, 0, 32, 32]]);
+  assert.deepEqual(plain(icon.names), ["loaded"]);
+  assert.equal(second.children[1].children[0].textContent, "Two | Three");
+  assert.equal(second.children[1].children[1].textContent, "settings | three.test");
+  assert.deepEqual(second.children[0].children.map((pane) => pane.drawn.length), [0, 0]);
   page.show(0);
   assert.equal(page.rows()[0].attributes["aria-selected"], "true");
   page.key("keyup", { key: "k", metaKey: true });

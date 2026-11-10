@@ -12,7 +12,7 @@ With Edge focused, press the shortcut to copy the current URL, including its que
 
 Edge's restricted pages (such as `edge://extensions` and extension stores) still copy, but cannot display the message. File pages need **Allow access to file URLs** enabled in the extension's details to display it.
 
-The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, `offscreen` for a hidden clipboard document, `scripting` for page feedback and drag-to-split, and `tabs` for the recent-tab list. URLs are handled locally; opening a split loads the link normally. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands), [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen), and [script injection permissions](https://developer.chrome.com/docs/extensions/reference/api/scripting).
+The extension uses `activeTab` to read the URL when invoked, `clipboardWrite` to copy it, `offscreen` for a hidden clipboard document, `scripting` for page feedback and drag-to-split, `tabs` for the recent-tab list, and `favicon` for its site icons. URLs are handled locally; opening a split loads the link normally. See the [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands), [offscreen clipboard pattern](https://developer.chrome.com/docs/extensions/reference/api/offscreen), and [script injection permissions](https://developer.chrome.com/docs/extensions/reference/api/scripting).
 
 ## Try drag-to-split
 
@@ -30,11 +30,11 @@ This adds only the `contextMenus` permission. See the [native tab-menu context](
 
 ## Switch recent tabs
 
-Hold **Cmd** and tap **E** to move forward through the current window's 7 most recently used tabs, or **Shift+E** to move backward (starting from the 7th). Windows/Linux use **Ctrl+E** / **Ctrl+Shift+E**. These replace Edge's address-bar and sidebar search shortcuts (**Cmd+L** still focuses the address bar). A list shows which tab is selected while the modifier is held; release to switch, or press **Escape** to stay. Past the last tab, selection returns to the current tab. A quick tap jumps straight to the previous tab.
+Hold **Cmd** and tap **E** to move forward through the current window's 7 most recently used tabs, or **Shift+E** to move backward (starting from the 7th). Windows/Linux use **Ctrl+E** / **Ctrl+Shift+E**. These replace Edge's address-bar and sidebar search shortcuts (**Cmd+L** still focuses the address bar). A list shows which tab is selected while the modifier is held; release to switch, or press **Escape** to stay. Past the last tab, selection returns to the current tab. A quick tap jumps straight to the previous tab. A split view counts as one entry, listed as **Left | Right**; switching to it restores the split with the most recently used pane focused.
 
 Remap either shortcut at `edge://extensions/shortcuts` (**Switch to the next/previous most recently used tab**). Any Cmd, Ctrl, or Option/Alt combination works, because the list closes when all of those modifiers are released. Edge reserves **Ctrl+Tab** and does not allow extensions to use the Tab key, so it cannot be assigned.
 
-The list appears on HTTP/HTTPS pages (refresh tabs opened before installing). Restricted pages such as `edge://` can't display it, so the selection switches about a second after the last press. This feature adds the `tabs` permission to read tab titles; the ordering uses each tab's [`lastAccessed`](https://developer.chrome.com/docs/extensions/reference/api/tabs#property-Tab-lastAccessed) time.
+The list appears on HTTP/HTTPS pages (refresh tabs opened before installing). Restricted pages such as `edge://` can't display it, so the selection switches about a second after the last press. This feature adds the `tabs` permission to read tab titles and `favicon` to show cached site icons (no extra install warning); the ordering uses each tab's [`lastAccessed`](https://developer.chrome.com/docs/extensions/reference/api/tabs#property-Tab-lastAccessed) time.
 
 ## Checks
 
