@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Arcify Edge options</title>
+    <style>
+      body { font: 14px/20px system-ui, sans-serif; margin: 16px; min-width: 360px; }
+      fieldset { border: 0; margin: 0 0 16px; padding: 0; }
+      legend { font-weight: 600; margin-bottom: 8px; }
+      label { display: block; margin: 6px 0; }
+      p { color: #555; margin: 8px 0; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #202124; color: #e8eaed; }
+        p { color: #bdc1c6; }
+      }
+    </style>
+  </head>
+  <body>
+    <fieldset>
+      <legend>Tab right-click menu</legend>
+      <label><input type="checkbox" id="copyUrlsMenu"> Copy URL / Copy All URLs</label>
+      <label><input type="checkbox" id="splitSelectedMenu"> Open selected tabs in split screen / Unsplit tabs</label>
+      <p>Edge groups the items under an "Arcify Edge" submenu when both are enabled.</p>
+    </fieldset>
+    <script src="options.js"></script>
+  </body>
+</html>

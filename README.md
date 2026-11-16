@@ -24,9 +24,17 @@ This proof of concept uses the [native split-view extension API](https://develop
 
 ## Split selected tabs
 
-Reload the extension, select **exactly two adjacent tabs** in Edge's tab strip or vertical sidebar, then right-click either selected tab and choose **Open selected tabs in split screen**. Both tabs must share a group and pinned state, and neither can already be split. Arcify leaves tab order and membership unchanged. Invalid selections open an explanatory extension tab, including on restricted pages.
+Reload the extension, select **exactly two adjacent tabs** in Edge's tab strip or vertical sidebar, then press **Ctrl+Shift+S** on macOS (**Alt+Shift+S** on Windows/Linux). Edge doesn't use these keys, and web pages rarely do. Remap the shortcut at `edge://extensions/shortcuts` (**Split the two selected tabs, or unsplit the current split**), and assign it there if it's blank because of a conflict. The same shortcut unsplits: if the active tab or any selected tab is already in a split view, that split is separated instead. You can also right-click either selected tab and choose **Open selected tabs in split screen**; when the selection includes a split tab, the item reads **Unsplit tabs** instead. The menu item can be turned off in the extension's options. Both tabs must share a group and pinned state. Arcify leaves tab order and membership unchanged. Invalid selections open an explanatory extension tab, including on restricted pages.
 
-This adds only the `contextMenus` permission. See the [native tab-menu context](https://developer.chrome.com/docs/extensions/reference/api/contextMenus#type-ContextType) and [split-view API constraints](https://developer.chrome.com/blog/split-view-api-extensions#general-constraints).
+This uses the `contextMenus` permission for the optional menu item. See the [native tab-menu context](https://developer.chrome.com/docs/extensions/reference/api/contextMenus#type-ContextType) and [split-view API constraints](https://developer.chrome.com/blog/split-view-api-extensions#general-constraints).
+
+## Copy tab URLs
+
+Enable **Copy URL / Copy All URLs** in the extension's options, then right-click a tab and choose **Copy URL** to copy its address. With several tabs selected, the item reads **Copy All URLs** and copies every selected tab's URL, one per line, in tab-strip order. As with Edge's own tab commands, right-clicking a tab outside the selection copies only that tab. A **URL copied** (or **N URLs copied**) message appears on the window's active page when it can display one.
+
+## Options
+
+Open `edge://extensions`, choose **Details** under Arcify Edge, then **Extension options** to choose which items appear when right-clicking a tab. By default only the split item appears, as before; **Copy URL** is opt-in. Edge places an extension's tab-menu items under an **Arcify Edge** submenu when there is more than one, so enabling both moves them into that submenu. Settings are stored with the `storage` permission and sync with your Edge profile.
 
 ## Switch recent tabs
 

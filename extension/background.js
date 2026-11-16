@@ -1,23 +1,101 @@
 let creatingOffscreen;
 
 const splitSelectedMenuId = "split-selected-tabs";
+const copyUrlsMenuId = "copy-tab-urls";
+const copyUrlsTitle = (count) => count > 1 ? "Copy All URLs" : "Copy URL";
+const splitTitle = (split) => split ? "Unsplit tabs" : "Open selected tabs in split screen";
+const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true };
+const isSplitTab = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: splitSelectedMenuId,
-    title: "Open selected tabs in split screen",
-    contexts: ["tab"]
-  }, () => {
-    if (chrome.runtime.lastError) {
-      console.error("Arcify Edge could not create the tab menu:", chrome.runtime.lastError.message);
-    }
+function createMenu(options) {
+  return new Promise((resolve) => {
+    chrome.contextMenus.create(options, () => {
+      if (chrome.runtime.lastError) {
+        console.error("Arcify Edge could not create the tab menu:", chrome.runtime.lastError.message);
+      }
+      resolve();
+    });
   });
+}
+
+let menuSettings;
+const getMenuSettings = () => (menuSettings ??= chrome.storage.sync.get(menuDefaults));
+
+// Edge groups an extension's tab-menu items into a submenu once there are two,
+// so only the items enabled on the options page are created.
+let menuRebuild = Promise.resolve();
+function rebuildMenus() {
+  menuRebuild = menuRebuild.then(async () => {
+    const settings = await getMenuSettings();
+    await chrome.contextMenus.removeAll();
+    if (settings.copyUrlsMenu) {
+      await createMenu({ id: copyUrlsMenuId, title: copyUrlsTitle(1), contexts: ["tab"] });
+    }
+    if (settings.splitSelectedMenu) {
+      await createMenu({
+        id: splitSelectedMenuId,
+        title: splitTitle(false),
+        contexts: ["tab"]
+      });
+    }
+  }).catch((error) => {
+    console.error("Arcify Edge could not build the tab menu:", error);
+  });
+  return menuRebuild.then(() => refreshMenuTitles());
+}
+
+chrome.runtime.onInstalled.addListener(() => rebuildMenus());
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "sync" || !Object.keys(menuDefaults).some((key) => key in changes)) return;
+  menuSettings = undefined;
+  return rebuildMenus();
+});
+
+// Chromium has no menu onShown event, so titles track the focused window's selection.
+let menuTitleRefresh = 0;
+
+async function refreshMenuTitles(windowId) {
+  const refresh = ++menuTitleRefresh;
+  try {
+    const tabs = await chrome.tabs.query(Number.isInteger(windowId) && windowId >= 0
+      ? { highlighted: true, windowId }
+      : { highlighted: true, lastFocusedWindow: true });
+    await menuRebuild;
+    const settings = await getMenuSettings();
+    if (refresh !== menuTitleRefresh) return;
+    if (settings.copyUrlsMenu) {
+      await chrome.contextMenus.update(copyUrlsMenuId, { title: copyUrlsTitle(tabs.length) });
+    }
+    if (settings.splitSelectedMenu) {
+      await chrome.contextMenus.update(splitSelectedMenuId, { title: splitTitle(tabs.some(isSplitTab)) });
+    }
+  } catch (error) {
+    console.error("Arcify Edge could not update the tab menu:", error);
+  }
+}
+
+chrome.runtime.onStartup.addListener(() => refreshMenuTitles());
+chrome.tabs.onHighlighted.addListener(({ windowId }) => refreshMenuTitles(windowId));
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if ("splitViewId" in changeInfo) refreshMenuTitles();
+});
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) refreshMenuTitles(windowId);
 });
 
 chrome.contextMenus.onClicked.addListener(handleSelectedTabsMenu);
 
 function handleSelectedTabsMenu(info, tab) {
+  if (info.menuItemId === copyUrlsMenuId) {
+    return copyTabUrls(tab).catch((error) => {
+      console.error("Arcify Edge could not copy the tab URLs:", error);
+    });
+  }
   if (info.menuItemId !== splitSelectedMenuId) return;
+  return splitSelectedWithFeedback(tab);
+}
+
+function splitSelectedWithFeedback(tab) {
   return splitSelectedTabs(tab).catch(async (error) => {
     console.error("Arcify Edge could not split the selected tabs:", error);
     await chrome.tabs.create({
@@ -31,9 +109,19 @@ function handleSelectedTabsMenu(info, tab) {
 
 async function splitSelectedTabs(clickedTab) {
   if (!Number.isInteger(clickedTab?.id) || !Number.isInteger(clickedTab.windowId)) {
-    throw new Error("Right-click one of the two selected tabs.");
+    throw new Error("Select two tabs, then use the shortcut or right-click one of them.");
   }
   const tabs = await chrome.tabs.query({ highlighted: true, windowId: clickedTab.windowId });
+  // Toggle: any split in the targeted tabs is unsplit instead of creating a new one.
+  const targets = tabs.some((tab) => tab.id === clickedTab.id) ? tabs : [clickedTab];
+  const splitViewIds = [...new Set(targets.filter(isSplitTab).map((tab) => tab.splitViewId))];
+  if (splitViewIds.length > 0) {
+    if (typeof chrome.tabs.unsplit !== "function") {
+      throw new Error("This browser does not support unsplitting from extensions.");
+    }
+    for (const splitViewId of splitViewIds) await chrome.tabs.unsplit(splitViewId);
+    return;
+  }
   if (tabs.length !== 2) {
     throw new Error(`Select exactly two tabs to open in split screen (${tabs.length} selected).`);
   }
@@ -45,9 +133,6 @@ async function splitSelectedTabs(clickedTab) {
   }
   tabs.sort((a, b) => a.index - b.index);
   const [first, second] = tabs;
-  if (tabs.some((tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1)) {
-    throw new Error("A selected tab is already in split view. Unsplit it first.");
-  }
   if (first.windowId !== second.windowId || first.groupId !== second.groupId ||
       first.pinned !== second.pinned) {
     throw new Error("Select two tabs in the same window and group, with the same pinned state.");
@@ -212,12 +297,24 @@ chrome.commands.onCommand.addListener((command, tab) => {
     queueMru(() => cycleMru(mruDirections[command], tab));
     return;
   }
+  if (command === "split-selected-tabs") {
+    splitSelectedCommand(tab);
+    return;
+  }
   if (command !== "copy-page-url") return;
 
   copyPageUrl(tab).catch((error) => {
     console.error("Arcify Edge could not copy the page URL:", error);
   });
 });
+
+async function splitSelectedCommand(tab) {
+  const activeTab = tab ?? (await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true
+  }).catch(() => []))[0];
+  return splitSelectedWithFeedback(activeTab);
+}
 
 async function copyPageUrl(tab) {
   const activeTab = tab ?? (await chrome.tabs.query({
@@ -228,20 +325,52 @@ async function copyPageUrl(tab) {
     throw new Error("The active page URL is unavailable.");
   }
 
+  await writeClipboard(activeTab.url);
+  await showCopyConfirmation(activeTab, "URL copied");
+}
+
+// Like Chromium's own tab commands, a click inside the selection applies to every
+// selected tab; a click outside it applies only to the clicked tab.
+async function copyTabUrls(clickedTab) {
+  if (!Number.isInteger(clickedTab?.id) || !Number.isInteger(clickedTab.windowId)) {
+    throw new Error("The clicked tab is unavailable.");
+  }
+  const selected = await chrome.tabs.query({ highlighted: true, windowId: clickedTab.windowId });
+  const tabs = selected.some((tab) => tab.id === clickedTab.id) ? selected : [clickedTab];
+  const urls = tabs.filter((tab) => tab.url)
+    .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+    .map((tab) => tab.url);
+  if (urls.length === 0) {
+    throw new Error("The tab URLs are unavailable.");
+  }
+
+  await writeClipboard(urls.join("\n"));
+  const [activeTab] = await chrome.tabs.query({ active: true, windowId: clickedTab.windowId });
+  await showCopyConfirmation(activeTab, urls.length > 1 ? `${urls.length} URLs copied` : "URL copied");
+}
+
+async function writeClipboard(text) {
   await ensureOffscreenDocument();
   const response = await chrome.runtime.sendMessage({
     target: "offscreen",
     type: "copy-page-url",
-    url: activeTab.url
+    url: text
   });
   if (!response?.ok) {
     throw new Error(response?.error ?? "The clipboard document did not respond.");
   }
+}
 
-  if (!Number.isInteger(activeTab.id) || !/^(https?|file):/.test(activeTab.url)) return;
+async function showCopyConfirmation(tab, message) {
+  if (!Number.isInteger(tab?.id) || !/^(https?|file):/.test(tab.url ?? "")) return;
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: activeTab.id },
+      target: { tabId: tab.id },
+      func: (text) => { globalThis.arcifyEdgeToastMessage = text; },
+      args: [message]
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
       files: ["toast.js"]
     });
   } catch (error) {

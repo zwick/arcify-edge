@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Arcify Edge",
   "version": "1.0.0",
-  "description": "Arc-style shortcuts for Edge: copy the page URL, switch recent tabs, and split views.",
+  "description": "Arc-style shortcuts for Edge: copy page and tab URLs, switch recent tabs, and split views.",
   "permissions": [
     "activeTab",
     "clipboardWrite",
@@ -10,10 +10,15 @@
     "scripting",
     "contextMenus",
     "tabs",
-    "favicon"
+    "favicon",
+    "storage"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
   },
   "content_scripts": [
     {
@@ -49,6 +54,13 @@
         "mac": "Command+Shift+E"
       },
       "description": "Switch to the previous most recently used tab"
+    },
+    "split-selected-tabs": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "MacCtrl+Shift+S"
+      },
+      "description": "Split the two selected tabs, or unsplit the current split"
     }
   }
 }
