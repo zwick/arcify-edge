@@ -2,7 +2,6 @@ let creatingOffscreen;
 
 const splitSelectedMenuId = "split-selected-tabs";
 const copyUrlsMenuId = "copy-tab-urls";
-const splitTitle = (split) => split ? "Unsplit tabs" : "Open selected tabs in split screen";
 const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true };
 const isSplitTab = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
@@ -17,64 +16,29 @@ function createMenu(options) {
   });
 }
 
-let menuSettings;
-const getMenuSettings = () => (menuSettings ??= chrome.storage.sync.get(menuDefaults));
-
 // Edge groups an extension's tab-menu items into a submenu once there are two,
 // so only the items enabled on the options page are created.
 let menuRebuild = Promise.resolve();
 function rebuildMenus() {
   menuRebuild = menuRebuild.then(async () => {
-    const settings = await getMenuSettings();
+    const settings = await chrome.storage.sync.get(menuDefaults);
     await chrome.contextMenus.removeAll();
     if (settings.copyUrlsMenu) {
       await createMenu({ id: copyUrlsMenuId, title: "Copy URL(s)", contexts: ["tab"] });
     }
     if (settings.splitSelectedMenu) {
-      await createMenu({
-        id: splitSelectedMenuId,
-        title: splitTitle(false),
-        contexts: ["tab"]
-      });
+      await createMenu({ id: splitSelectedMenuId, title: "Split / Unsplit Tabs", contexts: ["tab"] });
     }
   }).catch((error) => {
     console.error("Arcify Edge could not build the tab menu:", error);
   });
-  return menuRebuild.then(() => refreshMenuTitles());
+  return menuRebuild;
 }
 
 chrome.runtime.onInstalled.addListener(() => rebuildMenus());
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "sync" || !Object.keys(menuDefaults).some((key) => key in changes)) return;
-  menuSettings = undefined;
   return rebuildMenus();
-});
-
-// Chromium has no menu onShown event, so the split title tracks the focused window's selection.
-let menuTitleRefresh = 0;
-
-async function refreshMenuTitles(windowId) {
-  const refresh = ++menuTitleRefresh;
-  try {
-    const tabs = await chrome.tabs.query(Number.isInteger(windowId) && windowId >= 0
-      ? { highlighted: true, windowId }
-      : { highlighted: true, lastFocusedWindow: true });
-    await menuRebuild;
-    const settings = await getMenuSettings();
-    if (refresh !== menuTitleRefresh || !settings.splitSelectedMenu) return;
-    await chrome.contextMenus.update(splitSelectedMenuId, { title: splitTitle(tabs.some(isSplitTab)) });
-  } catch (error) {
-    console.error("Arcify Edge could not update the tab menu:", error);
-  }
-}
-
-chrome.runtime.onStartup.addListener(() => refreshMenuTitles());
-chrome.tabs.onHighlighted.addListener(({ windowId }) => refreshMenuTitles(windowId));
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if ("splitViewId" in changeInfo) refreshMenuTitles();
-});
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId !== chrome.windows.WINDOW_ID_NONE) refreshMenuTitles(windowId);
 });
 
 chrome.contextMenus.onClicked.addListener(handleSelectedTabsMenu);

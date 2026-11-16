@@ -18,35 +18,20 @@ function background(overrides = () => {}) {
   let messageListener;
   let menuListener;
   let installedListener;
-  let startupListener;
-  let highlightedListener;
-  let updatedListener;
-  let focusListener;
   let storageListener;
   let menus = [];
-  const menuUpdates = [];
   const stored = {};
   const chrome = {
     contextMenus: {
       create: (options, callback) => { menus.push(options); callback(); },
       removeAll: async () => { menus = []; },
-      update: async (id, options) => { menuUpdates.push({ id, ...options }); },
       onClicked: { addListener: (handler) => { menuListener = handler; } }
     },
     commands: { onCommand: { addListener: (handler) => { listener = handler; } } },
-    tabs: {
-      query: async () => [{ url }],
-      onHighlighted: { addListener: (handler) => { highlightedListener = handler; } },
-      onUpdated: { addListener: (handler) => { updatedListener = handler; } }
-    },
-    windows: {
-      WINDOW_ID_NONE: -1,
-      onFocusChanged: { addListener: (handler) => { focusListener = handler; } }
-    },
+    tabs: { query: async () => [{ url }] },
     scripting: { executeScript: async (options) => { injections.push(options); } },
     runtime: {
       onInstalled: { addListener: (handler) => { installedListener = handler; } },
-      onStartup: { addListener: (handler) => { startupListener = handler; } },
       getURL: (file) => `chrome-extension://test/${file}`,
       getContexts: async () => [],
       sendMessage: async (message) => { messages.push(message); return { ok: true }; },
@@ -77,17 +62,13 @@ function background(overrides = () => {}) {
   });
   vm.runInContext(source("background.js"), context);
   return {
-    messages, errors, documents, injections, warnings, menuUpdates, timers,
+    messages, errors, documents, injections, warnings, timers,
     get menus() { return menus; },
     install: () => installedListener(),
     changeSettings: (changes, area = "sync") => {
       Object.assign(stored, changes);
       return storageListener(Object.fromEntries(Object.keys(changes).map((key) => [key, {}])), area);
     },
-    startup: () => startupListener(),
-    highlight: (info) => highlightedListener(info),
-    updated: (...args) => updatedListener(...args),
-    focus: (windowId) => focusListener(windowId),
     copyTabs: (tab) => context.copyTabUrls(tab),
     menu: (info, tab) => menuListener(info, tab),
     splitSelected: (tab) => context.splitSelectedTabs(tab),
@@ -155,11 +136,11 @@ const selectedPair = () => [
 ];
 
 test("installs only the existing split tab menu by default and rebuilds it from settings", async () => {
-  const app = background((chrome) => { chrome.tabs.query = async () => [{}, {}]; });
+  const app = background();
   const ids = () => app.menus.map((menu) => menu.id);
   await app.install();
   assert.deepEqual(ids(), ["split-selected-tabs"]);
-  assert.equal(app.menus[0].title, "Open selected tabs in split screen");
+  assert.equal(app.menus[0].title, "Split / Unsplit Tabs");
   assert.deepEqual(Array.from(app.menus[0].contexts), ["tab"]);
   await app.changeSettings({ copyUrlsMenu: true });
   assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs"]);
@@ -167,7 +148,6 @@ test("installs only the existing split tab menu by default and rebuilds it from 
   await app.changeSettings({ splitSelectedMenu: false });
   assert.deepEqual(ids(), ["copy-tab-urls"]);
   assert.equal(app.menus[0].title, "Copy URL(s)");
-  assert.deepEqual(app.menuUpdates.map((update) => update.id), ["split-selected-tabs", "split-selected-tabs"]);
   app.changeSettings({ splitSelectedMenu: true }, "local");
   app.changeSettings({ unrelated: true });
   await new Promise(setImmediate);
@@ -332,59 +312,6 @@ test("copy menu rejects missing tabs and URLs without writing", async () => {
   await new Promise(setImmediate);
   assert.equal(app.errors.length, 1);
   assert.equal(app.messages.length, 0);
-});
-
-test("split menu title follows the focused window's selection and split state", async () => {
-  const windows = { 7: [{ splitViewId: -1 }, {}], 8: [{}] };
-  const queries = [];
-  const app = background((chrome) => {
-    chrome.tabs.query = async (options) => {
-      queries.push(options);
-      return windows[options.windowId] ?? [{ splitViewId: 4 }];
-    };
-  });
-  const titles = () => app.menuUpdates.splice(0).map((update) => `${update.id}: ${update.title}`);
-  await app.highlight({ windowId: 7, tabIds: [1, 2] });
-  await app.highlight({ windowId: 8, tabIds: [1] });
-  assert.deepEqual(titles(), [
-    "split-selected-tabs: Open selected tabs in split screen",
-    "split-selected-tabs: Open selected tabs in split screen"
-  ]);
-  app.updated(1, { splitViewId: 4 });
-  await new Promise(setImmediate);
-  assert.deepEqual(titles(), ["split-selected-tabs: Unsplit tabs"]);
-  assert.equal(queries.at(-1).lastFocusedWindow, true);
-  app.updated(1, { title: "Unrelated" });
-  app.focus(-1);
-  await new Promise(setImmediate);
-  assert.deepEqual(titles(), []);
-  app.focus(7);
-  await new Promise(setImmediate);
-  await app.startup();
-  assert.deepEqual(titles(), [
-    "split-selected-tabs: Open selected tabs in split screen", "split-selected-tabs: Unsplit tabs"
-  ]);
-});
-
-test("a newer selection wins over a slower focus lookup", async () => {
-  const releases = [];
-  const app = background((chrome) => {
-    chrome.tabs.query = () => new Promise((resolve) => { releases.push(resolve); });
-  });
-  app.focus(7);
-  app.highlight({ windowId: 7, tabIds: [1] });
-  releases[1]([{ splitViewId: 3 }]);
-  releases[0]([{}, {}]);
-  await new Promise(setImmediate);
-  assert.deepEqual(app.menuUpdates.map((update) => update.title), ["Unsplit tabs"]);
-});
-
-test("disabled menus are never retitled", async () => {
-  const app = background();
-  await app.changeSettings({ splitSelectedMenu: false });
-  await app.highlight({ windowId: 7, tabIds: [1, 2] });
-  assert.equal(app.menuUpdates.length, 0);
-  assert.equal(app.errors.length, 0);
 });
 
 test("options page saves menu choices", async () => {
