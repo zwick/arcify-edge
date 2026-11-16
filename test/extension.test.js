@@ -166,8 +166,8 @@ test("installs only the existing split tab menu by default and rebuilds it from 
   for (const menu of app.menus) assert.deepEqual(Array.from(menu.contexts), ["tab"]);
   await app.changeSettings({ splitSelectedMenu: false });
   assert.deepEqual(ids(), ["copy-tab-urls"]);
-  assert.deepEqual(app.menuUpdates.map((update) => update.id),
-    ["split-selected-tabs", "copy-tab-urls", "split-selected-tabs", "copy-tab-urls"]);
+  assert.equal(app.menus[0].title, "Copy URL(s)");
+  assert.deepEqual(app.menuUpdates.map((update) => update.id), ["split-selected-tabs", "split-selected-tabs"]);
   app.changeSettings({ splitSelectedMenu: true }, "local");
   app.changeSettings({ unrelated: true });
   await new Promise(setImmediate);
@@ -334,7 +334,7 @@ test("copy menu rejects missing tabs and URLs without writing", async () => {
   assert.equal(app.messages.length, 0);
 });
 
-test("menu titles follow the focused window's selection and split state", async () => {
+test("split menu title follows the focused window's selection and split state", async () => {
   const windows = { 7: [{ splitViewId: -1 }, {}], 8: [{}] };
   const queries = [];
   const app = background((chrome) => {
@@ -343,18 +343,16 @@ test("menu titles follow the focused window's selection and split state", async 
       return windows[options.windowId] ?? [{ splitViewId: 4 }];
     };
   });
-  await app.changeSettings({ copyUrlsMenu: true });
   const titles = () => app.menuUpdates.splice(0).map((update) => `${update.id}: ${update.title}`);
-  titles();
   await app.highlight({ windowId: 7, tabIds: [1, 2] });
   await app.highlight({ windowId: 8, tabIds: [1] });
   assert.deepEqual(titles(), [
-    "copy-tab-urls: Copy All URLs", "split-selected-tabs: Open selected tabs in split screen",
-    "copy-tab-urls: Copy URL", "split-selected-tabs: Open selected tabs in split screen"
+    "split-selected-tabs: Open selected tabs in split screen",
+    "split-selected-tabs: Open selected tabs in split screen"
   ]);
   app.updated(1, { splitViewId: 4 });
   await new Promise(setImmediate);
-  assert.deepEqual(titles(), ["copy-tab-urls: Copy URL", "split-selected-tabs: Unsplit tabs"]);
+  assert.deepEqual(titles(), ["split-selected-tabs: Unsplit tabs"]);
   assert.equal(queries.at(-1).lastFocusedWindow, true);
   app.updated(1, { title: "Unrelated" });
   app.focus(-1);
@@ -364,8 +362,7 @@ test("menu titles follow the focused window's selection and split state", async 
   await new Promise(setImmediate);
   await app.startup();
   assert.deepEqual(titles(), [
-    "copy-tab-urls: Copy All URLs", "split-selected-tabs: Open selected tabs in split screen",
-    "copy-tab-urls: Copy URL", "split-selected-tabs: Unsplit tabs"
+    "split-selected-tabs: Open selected tabs in split screen", "split-selected-tabs: Unsplit tabs"
   ]);
 });
 

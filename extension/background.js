@@ -2,7 +2,6 @@ let creatingOffscreen;
 
 const splitSelectedMenuId = "split-selected-tabs";
 const copyUrlsMenuId = "copy-tab-urls";
-const copyUrlsTitle = (count) => count > 1 ? "Copy All URLs" : "Copy URL";
 const splitTitle = (split) => split ? "Unsplit tabs" : "Open selected tabs in split screen";
 const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true };
 const isSplitTab = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
@@ -29,7 +28,7 @@ function rebuildMenus() {
     const settings = await getMenuSettings();
     await chrome.contextMenus.removeAll();
     if (settings.copyUrlsMenu) {
-      await createMenu({ id: copyUrlsMenuId, title: copyUrlsTitle(1), contexts: ["tab"] });
+      await createMenu({ id: copyUrlsMenuId, title: "Copy URL(s)", contexts: ["tab"] });
     }
     if (settings.splitSelectedMenu) {
       await createMenu({
@@ -51,7 +50,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   return rebuildMenus();
 });
 
-// Chromium has no menu onShown event, so titles track the focused window's selection.
+// Chromium has no menu onShown event, so the split title tracks the focused window's selection.
 let menuTitleRefresh = 0;
 
 async function refreshMenuTitles(windowId) {
@@ -62,13 +61,8 @@ async function refreshMenuTitles(windowId) {
       : { highlighted: true, lastFocusedWindow: true });
     await menuRebuild;
     const settings = await getMenuSettings();
-    if (refresh !== menuTitleRefresh) return;
-    if (settings.copyUrlsMenu) {
-      await chrome.contextMenus.update(copyUrlsMenuId, { title: copyUrlsTitle(tabs.length) });
-    }
-    if (settings.splitSelectedMenu) {
-      await chrome.contextMenus.update(splitSelectedMenuId, { title: splitTitle(tabs.some(isSplitTab)) });
-    }
+    if (refresh !== menuTitleRefresh || !settings.splitSelectedMenu) return;
+    await chrome.contextMenus.update(splitSelectedMenuId, { title: splitTitle(tabs.some(isSplitTab)) });
   } catch (error) {
     console.error("Arcify Edge could not update the tab menu:", error);
   }

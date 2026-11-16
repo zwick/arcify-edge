@@ -30,11 +30,11 @@ This uses the `contextMenus` permission for the optional menu item. See the [nat
 
 ## Copy tab URLs
 
-Enable **Copy URL / Copy All URLs** in the extension's options, then right-click a tab and choose **Copy URL** to copy its address. With several tabs selected, the item reads **Copy All URLs** and copies every selected tab's URL, one per line, in tab-strip order. As with Edge's own tab commands, right-clicking a tab outside the selection copies only that tab. A **URL copied** (or **N URLs copied**) message appears on the window's active page when it can display one.
+Enable **Copy URL(s)** in the extension's options, then right-click a tab and choose **Copy URL(s)** to copy its address. Right-clicking one of several selected tabs copies every selected tab's URL, one per line, in tab-strip order. As with Edge's own tab commands, right-clicking a tab outside the selection copies only that tab. A **URL copied** (or **N URLs copied**) message appears on the window's active page when it can display one.
 
 ## Options
 
-Open `edge://extensions`, choose **Details** under Arcify Edge, then **Extension options** to choose which items appear when right-clicking a tab. By default only the split item appears, as before; **Copy URL** is opt-in. Edge places an extension's tab-menu items under an **Arcify Edge** submenu when there is more than one, so enabling both moves them into that submenu. Settings are stored with the `storage` permission and sync with your Edge profile.
+Open `edge://extensions`, choose **Details** under Arcify Edge, then **Extension options** to choose which items appear when right-clicking a tab. By default only the split item appears, as before; **Copy URL(s)** is opt-in. Edge places an extension's tab-menu items under an **Arcify Edge** submenu when there is more than one, so enabling both moves them into that submenu. Settings are stored with the `storage` permission and sync with your Edge profile.
 
 ## Switch recent tabs
 
