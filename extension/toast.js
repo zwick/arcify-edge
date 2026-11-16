@@ -40,7 +40,8 @@
   `;
   const message = document.createElement("div");
   message.setAttribute("role", "status");
-  message.textContent = "URL copied";
+  message.textContent = globalThis.arcifyEdgeToastMessage || "URL copied";
+  delete globalThis.arcifyEdgeToastMessage;
   shadow.append(style, message);
   document.documentElement.append(host);
   setTimeout(() => host.remove(), 1400);

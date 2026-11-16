@@ -18,10 +18,13 @@ function background(overrides = () => {}) {
   let messageListener;
   let menuListener;
   let installedListener;
-  const menus = [];
+  let storageListener;
+  let menus = [];
+  const stored = {};
   const chrome = {
     contextMenus: {
       create: (options, callback) => { menus.push(options); callback(); },
+      removeAll: async () => { menus = []; },
       onClicked: { addListener: (handler) => { menuListener = handler; } }
     },
     commands: { onCommand: { addListener: (handler) => { listener = handler; } } },
@@ -34,7 +37,11 @@ function background(overrides = () => {}) {
       sendMessage: async (message) => { messages.push(message); return { ok: true }; },
       onMessage: { addListener: (handler) => { messageListener = handler; } }
     },
-    offscreen: { createDocument: async (options) => { documents.push(options); } }
+    offscreen: { createDocument: async (options) => { documents.push(options); } },
+    storage: {
+      sync: { get: async (defaults) => ({ ...defaults, ...stored }) },
+      onChanged: { addListener: (handler) => { storageListener = handler; } }
+    }
   };
   const env = {
     fetch: async (request) => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer, request })
@@ -55,8 +62,14 @@ function background(overrides = () => {}) {
   });
   vm.runInContext(source("background.js"), context);
   return {
-    messages, errors, documents, injections, warnings, menus, timers,
+    messages, errors, documents, injections, warnings, timers,
+    get menus() { return menus; },
     install: () => installedListener(),
+    changeSettings: (changes, area = "sync") => {
+      Object.assign(stored, changes);
+      return storageListener(Object.fromEntries(Object.keys(changes).map((key) => [key, {}])), area);
+    },
+    copyTabs: (tab) => context.copyTabUrls(tab),
     menu: (info, tab) => menuListener(info, tab),
     splitSelected: (tab) => context.splitSelectedTabs(tab),
     copy: (tab) => context.copyPageUrl(tab),
@@ -103,7 +116,10 @@ test("manifest wires the Mac shortcut and only required permissions", () => {
   assert.equal(manifest.commands["copy-page-url"].suggested_key.default, "Ctrl+Shift+C");
   assert.deepEqual(manifest.commands["mru-next"].suggested_key, { default: "Ctrl+E", mac: "Command+E" });
   assert.deepEqual(manifest.commands["mru-previous"].suggested_key, { default: "Ctrl+Shift+E", mac: "Command+Shift+E" });
-  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus", "tabs", "favicon"]);
+  assert.deepEqual(manifest.commands["split-selected-tabs"].suggested_key, { default: "Alt+Shift+S", mac: "MacCtrl+Shift+S" });
+  assert.equal(Object.values(manifest.commands).filter((command) => command.suggested_key).length <= 4, true);
+  assert.deepEqual(manifest.permissions, ["activeTab", "clipboardWrite", "offscreen", "scripting", "contextMenus", "tabs", "favicon", "storage"]);
+  assert.equal(manifest.options_ui.page, "options.html");
   assert.equal(manifest.action, undefined);
   assert.deepEqual(manifest.content_scripts, [{
     matches: ["http://*/*", "https://*/*"], js: ["split-drag.js", "mru-switcher.js"], run_at: "document_idle"
@@ -119,12 +135,41 @@ const selectedPair = () => [
   { id: 42, windowId: 7, index: 3, groupId: -1, pinned: false, splitViewId: -1 }
 ];
 
-test("installs only a native tab-strip context menu", () => {
+test("installs only the existing split tab menu by default and rebuilds it from settings", async () => {
   const app = background();
-  app.install();
-  assert.equal(app.menus.length, 1);
-  assert.equal(app.menus[0].id, "split-selected-tabs");
+  const ids = () => app.menus.map((menu) => menu.id);
+  await app.install();
+  assert.deepEqual(ids(), ["split-selected-tabs"]);
+  assert.equal(app.menus[0].title, "Split / Unsplit Tabs");
   assert.deepEqual(Array.from(app.menus[0].contexts), ["tab"]);
+  await app.changeSettings({ copyUrlsMenu: true });
+  assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs"]);
+  for (const menu of app.menus) assert.deepEqual(Array.from(menu.contexts), ["tab"]);
+  await app.changeSettings({ splitSelectedMenu: false });
+  assert.deepEqual(ids(), ["copy-tab-urls"]);
+  assert.equal(app.menus[0].title, "Copy URL(s)");
+  app.changeSettings({ splitSelectedMenu: true }, "local");
+  app.changeSettings({ unrelated: true });
+  await new Promise(setImmediate);
+  assert.deepEqual(ids(), ["copy-tab-urls"]);
+});
+
+test("split shortcut uses the active tab and reports invalid selections", async () => {
+  const pairs = [];
+  const created = [];
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => options.active ? [{ id: 41, windowId: 7 }] : selectedPair();
+    chrome.tabs.createSplit = async (ids) => { pairs.push(Array.from(ids)); };
+    chrome.tabs.create = async (options) => { created.push(options); };
+  });
+  app.command("split-selected-tabs", { id: 42, windowId: 7 });
+  app.command("split-selected-tabs");
+  await new Promise(setImmediate);
+  assert.deepEqual(pairs, [[41, 42], [41, 42]]);
+  app.command("split-selected-tabs", { id: 43 });
+  await new Promise(setImmediate);
+  assert.match(created[0].url, /split-error.html\?message=Select%20two%20tabs/);
+  assert.equal(app.messages.length, 0);
 });
 
 test("selected tab split queries the clicked window and preserves strip order", async () => {
@@ -151,8 +196,7 @@ test("rejects counts other than two, unrelated clicks, and incompatible pairs wi
     [selectedPair().map((tab, i) => ({ ...tab, index: i * 2 })), /next to each other/],
     [selectedPair().map((tab, i) => ({ ...tab, groupId: i })), /same window and group/],
     [selectedPair().map((tab, i) => ({ ...tab, pinned: !!i })), /pinned state/],
-    [selectedPair().map((tab, i) => ({ ...tab, windowId: 7 + i })), /same window/],
-    [selectedPair().map((tab, i) => ({ ...tab, splitViewId: i ? 123 : -1 })), /already in split/]
+    [selectedPair().map((tab, i) => ({ ...tab, windowId: 7 + i })), /same window/]
   ];
   for (const [tabs, error] of cases) {
     const app = background((chrome) => {
@@ -163,10 +207,34 @@ test("rejects counts other than two, unrelated clicks, and incompatible pairs wi
   }
 });
 
+test("split toggles off: selected or clicked split tabs are unsplit instead", async () => {
+  const cases = [
+    [selectedPair().map((tab, i) => ({ ...tab, splitViewId: i ? 123 : -1 })), { id: 42, windowId: 7 }, [123]],
+    [[{ id: 41, windowId: 7, splitViewId: 5 }, { id: 42, windowId: 7, splitViewId: 5 },
+      { id: 43, windowId: 7, splitViewId: 6 }], { id: 43, windowId: 7 }, [5, 6]],
+    [[{ id: 41, windowId: 7, splitViewId: 5 }], { id: 42, windowId: 7, splitViewId: 9 }, [9]],
+    [[{ id: 41, windowId: 7, splitViewId: 5 }], { id: 41, windowId: 7, splitViewId: 5 }, [5]]
+  ];
+  for (const [tabs, clicked, expected] of cases) {
+    const unsplit = [];
+    const app = background((chrome) => {
+      chrome.tabs.query = async () => tabs;
+      chrome.tabs.unsplit = async (id) => { unsplit.push(id); };
+      chrome.tabs.createSplit = async () => assert.fail("Unsplitting must not split");
+    });
+    await app.splitSelected(clicked);
+    assert.deepEqual(unsplit, expected);
+  }
+  const app = background((chrome) => {
+    chrome.tabs.query = async () => [{ id: 41, windowId: 7, splitViewId: 5 }];
+  });
+  await assert.rejects(app.splitSelected({ id: 41, windowId: 7 }), /does not support unsplitting/);
+});
+
 test("rejects missing context and unsupported split API explicitly", async () => {
   const app = background((chrome) => { chrome.tabs.query = async () => selectedPair(); });
-  await assert.rejects(app.splitSelected(), /Right-click/);
-  await assert.rejects(app.splitSelected({ id: 42 }), /Right-click/);
+  await assert.rejects(app.splitSelected(), /Select two tabs/);
+  await assert.rejects(app.splitSelected({ id: 42 }), /Select two tabs/);
   await assert.rejects(app.splitSelected({ id: 42, windowId: 7 }), /does not support/);
 });
 
@@ -202,6 +270,72 @@ test("native menu errors open readable extension feedback even for restricted pa
     assert.equal(app.errors.length, 1);
     assert.equal(app.injections.length, 0);
   }
+});
+
+const selectedTabs = () => [
+  { id: 51, windowId: 7, index: 4, url: "https://example.com/c", active: false },
+  { id: 52, windowId: 7, index: 1, url, active: true },
+  { id: 53, windowId: 7, index: 2, url: "edge://settings/", active: false }
+];
+
+test("copy menu copies selected tab URLs in strip order and confirms the count", async () => {
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => {
+      assert.equal(options.windowId, 7);
+      if (options.active) return [selectedTabs()[1]];
+      assert.equal(options.highlighted, true);
+      return selectedTabs();
+    };
+  });
+  app.menu({ menuItemId: "copy-tab-urls" }, { id: 51, windowId: 7 });
+  await new Promise(setImmediate);
+  assert.equal(app.messages[0].url, `${url}\nedge://settings/\nhttps://example.com/c`);
+  assert.equal(app.injections[0].target.tabId, 52);
+  assert.deepEqual(Array.from(app.injections[0].args), ["3 URLs copied"]);
+  assert.equal(app.errors.length, 0);
+});
+
+test("copy menu copies only the clicked tab when it is outside the selection", async () => {
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => options.active ? [] : selectedTabs();
+  });
+  await app.copyTabs({ id: 60, windowId: 7, index: 9, url: "https://example.org/" });
+  assert.equal(app.messages[0].url, "https://example.org/");
+  assert.equal(app.injections.length, 0);
+});
+
+test("copy menu rejects missing tabs and URLs without writing", async () => {
+  const app = background((chrome) => { chrome.tabs.query = async () => [{ id: 51, windowId: 7 }]; });
+  await assert.rejects(app.copyTabs(), /unavailable/);
+  await assert.rejects(app.copyTabs({ id: 51, windowId: 7 }), /unavailable/);
+  app.menu({ menuItemId: "copy-tab-urls" }, { id: 51, windowId: 7 });
+  await new Promise(setImmediate);
+  assert.equal(app.errors.length, 1);
+  assert.equal(app.messages.length, 0);
+});
+
+test("options page saves menu choices", async () => {
+  const elements = {};
+  const element = (id) => (elements[id] ??= {
+    id, listeners: {}, addEventListener(type, handler) { this.listeners[type] = handler; }
+  });
+  const saved = [];
+  vm.runInNewContext(source("options.js"), {
+    document: { getElementById: element },
+    chrome: {
+      storage: { sync: {
+        get: async (defaults) => ({ ...defaults, copyUrlsMenu: true }),
+        set: async (values) => { saved.push(values); }
+      } }
+    }
+  });
+  await new Promise(setImmediate);
+  assert.equal(elements.copyUrlsMenu.checked, true);
+  assert.equal(elements.splitSelectedMenu.checked, true);
+  elements.copyUrlsMenu.checked = false;
+  elements.copyUrlsMenu.listeners.change();
+  assert.equal(JSON.stringify(saved), JSON.stringify([{ copyUrlsMenu: false }]));
+  assert.match(source("options.html"), /<script src="options.js"><\/script>/);
 });
 
 test("error page renders messages as text", () => {
@@ -344,14 +478,17 @@ test("offscreen ignores other messages and rejects invalid URLs", () => {
 });
 
 test("shows confirmation in the copied tab only after clipboard success", async () => {
+  const scripts = [];
   const app = background((chrome) => {
     chrome.scripting.executeScript = async (options) => {
       assert.equal(app.messages.length, 1);
       assert.equal(options.target.tabId, 42);
-      assert.equal(options.files[0], "toast.js");
+      scripts.push(options);
     };
   });
   await app.copy({ id: 42, url });
+  assert.deepEqual(Array.from(scripts[0].args), ["URL copied"]);
+  assert.equal(scripts[1].files[0], "toast.js");
 });
 
 test("failed clipboard writes never show confirmation", async () => {
@@ -407,6 +544,11 @@ test("toast replaces prior confirmation, stays isolated, and removes itself", ()
   const first = hosts.get("arcify-edge-copy-confirmation");
   assert.equal(first.shadowOptions.mode, "closed");
   assert.equal(first.shadow.children[1].textContent, "URL copied");
+  context.arcifyEdgeToastMessage = "3 URLs copied";
+  vm.runInContext(source("toast.js"), context);
+  assert.equal(hosts.get(first.id).shadow.children[1].textContent, "3 URLs copied");
+  assert.equal(context.arcifyEdgeToastMessage, undefined);
+  timers.shift();
   assert.equal(first.shadow.children[1].attributes.role, "status");
   assert.match(first.shadow.children[0].textContent, /prefers-reduced-motion/);
   assert.equal(timers[0].delay, 1400);
