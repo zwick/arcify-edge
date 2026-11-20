@@ -1,4 +1,4 @@
-const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true, closeDuplicatesMenu: false };
+const menuDefaults = { copyUrlsMenu: true, splitSelectedMenu: true, closeDuplicatesMenu: true };
 
 (async () => {
   const settings = await chrome.storage.sync.get(menuDefaults);

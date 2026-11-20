@@ -3,7 +3,7 @@ let creatingOffscreen;
 const splitSelectedMenuId = "split-selected-tabs";
 const copyUrlsMenuId = "copy-tab-urls";
 const closeDuplicatesMenuId = "close-duplicate-tabs";
-const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true, closeDuplicatesMenu: false };
+const menuDefaults = { copyUrlsMenu: true, splitSelectedMenu: true, closeDuplicatesMenu: true };
 const isSplitTab = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
 function createMenu(options) {

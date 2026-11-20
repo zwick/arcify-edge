@@ -135,22 +135,19 @@ const selectedPair = () => [
   { id: 42, windowId: 7, index: 3, groupId: -1, pinned: false, splitViewId: -1 }
 ];
 
-test("installs only the existing split tab menu by default and rebuilds it from settings", async () => {
+test("installs every tab menu item by default and rebuilds it from settings", async () => {
   const app = background();
   const ids = () => app.menus.map((menu) => menu.id);
   await app.install();
-  assert.deepEqual(ids(), ["split-selected-tabs"]);
-  assert.equal(app.menus[0].title, "Split / Unsplit Tabs");
-  assert.deepEqual(Array.from(app.menus[0].contexts), ["tab"]);
-  await app.changeSettings({ copyUrlsMenu: true });
-  assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs"]);
+  assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs", "close-duplicate-tabs"]);
+  assert.deepEqual(app.menus.map((menu) => menu.title), ["Copy URL(s)", "Split / Unsplit Tabs", "Close Duplicate Tabs"]);
   for (const menu of app.menus) assert.deepEqual(Array.from(menu.contexts), ["tab"]);
   await app.changeSettings({ splitSelectedMenu: false });
-  assert.deepEqual(ids(), ["copy-tab-urls"]);
-  assert.equal(app.menus[0].title, "Copy URL(s)");
-  await app.changeSettings({ closeDuplicatesMenu: true });
   assert.deepEqual(ids(), ["copy-tab-urls", "close-duplicate-tabs"]);
-  assert.equal(app.menus[1].title, "Close Duplicate Tabs");
+  await app.changeSettings({ copyUrlsMenu: false, closeDuplicatesMenu: false });
+  assert.deepEqual(ids(), []);
+  await app.changeSettings({ copyUrlsMenu: true, closeDuplicatesMenu: true });
+  assert.deepEqual(ids(), ["copy-tab-urls", "close-duplicate-tabs"]);
   app.changeSettings({ splitSelectedMenu: true }, "local");
   app.changeSettings({ unrelated: true });
   await new Promise(setImmediate);
@@ -406,7 +403,7 @@ test("options page saves menu choices", async () => {
     document: { getElementById: element },
     chrome: {
       storage: { sync: {
-        get: async (defaults) => ({ ...defaults, copyUrlsMenu: true }),
+        get: async (defaults) => ({ ...defaults, closeDuplicatesMenu: false }),
         set: async (values) => { saved.push(values); }
       } }
     }
