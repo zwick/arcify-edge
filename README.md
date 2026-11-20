@@ -34,7 +34,11 @@ Enable **Copy URL(s)** in the extension's options, then right-click a tab and ch
 
 ## Options
 
-Open `edge://extensions`, choose **Details** under Arcify Edge, then **Extension options** to choose which items appear when right-clicking a tab. By default only the split item appears, as before; **Copy URL(s)** is opt-in. Edge places an extension's tab-menu items under an **Arcify Edge** submenu when there is more than one, so enabling both moves them into that submenu. Settings are stored with the `storage` permission and sync with your Edge profile.
+Open `edge://extensions`, choose **Details** under Arcify Edge, then **Extension options** to choose which items appear when right-clicking a tab. By default only the split item appears; **Copy URL(s)** and **Close Duplicate Tabs** are opt-in. Edge places an extension's tab-menu items under an **Arcify Edge** submenu when there is more than one. Settings are stored with the `storage` permission and sync with your Edge profile.
+
+## Close duplicate tabs
+
+Enable **Close Duplicate Tabs** in options, then right-click any tab and choose that item to clean up its entire window. URLs must match exactly, including query strings and fragments. Active, pinned, and split-view tabs are always kept; otherwise the leftmost copy stays. Tabs with a pending navigation are skipped. A brief message on the active page reports the number closed when the page supports it. Closed tabs can be restored with Edge's **Reopen closed tab** command.
 
 ## Switch recent tabs
 
