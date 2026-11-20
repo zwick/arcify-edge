@@ -2,7 +2,8 @@ let creatingOffscreen;
 
 const splitSelectedMenuId = "split-selected-tabs";
 const copyUrlsMenuId = "copy-tab-urls";
-const menuDefaults = { copyUrlsMenu: false, splitSelectedMenu: true };
+const closeDuplicatesMenuId = "close-duplicate-tabs";
+const menuDefaults = { copyUrlsMenu: true, splitSelectedMenu: true, closeDuplicatesMenu: true };
 const isSplitTab = (tab) => tab.splitViewId !== undefined && tab.splitViewId !== -1;
 
 function createMenu(options) {
@@ -29,6 +30,9 @@ function rebuildMenus() {
     if (settings.splitSelectedMenu) {
       await createMenu({ id: splitSelectedMenuId, title: "Split / Unsplit Tabs", contexts: ["tab"] });
     }
+    if (settings.closeDuplicatesMenu) {
+      await createMenu({ id: closeDuplicatesMenuId, title: "Close Duplicate Tabs", contexts: ["tab"] });
+    }
   }).catch((error) => {
     console.error("Arcify Edge could not build the tab menu:", error);
   });
@@ -44,6 +48,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.contextMenus.onClicked.addListener(handleSelectedTabsMenu);
 
 function handleSelectedTabsMenu(info, tab) {
+  if (info.menuItemId === closeDuplicatesMenuId) {
+    return closeDuplicateTabs(tab).catch((error) => {
+      console.error("Arcify Edge could not close duplicate tabs:", error);
+    });
+  }
   if (info.menuItemId === copyUrlsMenuId) {
     return copyTabUrls(tab).catch((error) => {
       console.error("Arcify Edge could not copy the tab URLs:", error);
@@ -284,7 +293,7 @@ async function copyPageUrl(tab) {
   }
 
   await writeClipboard(activeTab.url);
-  await showCopyConfirmation(activeTab, "URL copied");
+  await showConfirmation(activeTab, "URL copied");
 }
 
 // Like Chromium's own tab commands, a click inside the selection applies to every
@@ -304,7 +313,42 @@ async function copyTabUrls(clickedTab) {
 
   await writeClipboard(urls.join("\n"));
   const [activeTab] = await chrome.tabs.query({ active: true, windowId: clickedTab.windowId });
-  await showCopyConfirmation(activeTab, urls.length > 1 ? `${urls.length} URLs copied` : "URL copied");
+  await showConfirmation(activeTab, urls.length > 1 ? `${urls.length} URLs copied` : "URL copied");
+}
+
+const keepDuplicate = (tab) => tab.active || tab.pinned || isSplitTab(tab);
+
+async function closeDuplicateTabs(clickedTab) {
+  if (!Number.isInteger(clickedTab?.windowId)) {
+    throw new Error("The clicked window is unavailable.");
+  }
+  const tabs = await chrome.tabs.query({ windowId: clickedTab.windowId });
+  const byUrl = new Map();
+  for (const tab of tabs) {
+    if (!tab.url || tab.pendingUrl) continue;
+    if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
+    byUrl.get(tab.url).push(tab);
+  }
+  let closed = 0;
+  for (const duplicates of byUrl.values()) {
+    if (duplicates.length < 2) continue;
+    duplicates.sort((a, b) => a.index - b.index);
+    const keeper = duplicates.find(keepDuplicate) ?? duplicates[0];
+    for (const tab of duplicates) {
+      if (tab.id === keeper.id || keepDuplicate(tab)) continue;
+      // Recheck both tabs in case either navigated or changed state during cleanup.
+      const currentKeeper = await chrome.tabs.get(keeper.id);
+      const current = await chrome.tabs.get(tab.id);
+      if (currentKeeper.windowId !== clickedTab.windowId || current.windowId !== clickedTab.windowId ||
+          currentKeeper.url !== tab.url || current.url !== tab.url ||
+          currentKeeper.pendingUrl || current.pendingUrl || keepDuplicate(current)) continue;
+      await chrome.tabs.remove(current.id);
+      closed++;
+    }
+  }
+  const [activeTab] = await chrome.tabs.query({ active: true, windowId: clickedTab.windowId });
+  await showConfirmation(activeTab, closed === 0 ? "No duplicate tabs to close" :
+    `${closed} duplicate tab${closed === 1 ? "" : "s"} closed`);
 }
 
 async function writeClipboard(text) {
@@ -319,7 +363,7 @@ async function writeClipboard(text) {
   }
 }
 
-async function showCopyConfirmation(tab, message) {
+async function showConfirmation(tab, message) {
   if (!Number.isInteger(tab?.id) || !/^(https?|file):/.test(tab.url ?? "")) return;
   try {
     await chrome.scripting.executeScript({
@@ -332,7 +376,7 @@ async function showCopyConfirmation(tab, message) {
       files: ["toast.js"]
     });
   } catch (error) {
-    console.warn("Arcify Edge copied the URL, but could not display confirmation:", error);
+    console.warn("Arcify Edge could not display confirmation:", error);
   }
 }
 

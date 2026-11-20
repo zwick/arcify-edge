@@ -135,23 +135,23 @@ const selectedPair = () => [
   { id: 42, windowId: 7, index: 3, groupId: -1, pinned: false, splitViewId: -1 }
 ];
 
-test("installs only the existing split tab menu by default and rebuilds it from settings", async () => {
+test("installs every tab menu item by default and rebuilds it from settings", async () => {
   const app = background();
   const ids = () => app.menus.map((menu) => menu.id);
   await app.install();
-  assert.deepEqual(ids(), ["split-selected-tabs"]);
-  assert.equal(app.menus[0].title, "Split / Unsplit Tabs");
-  assert.deepEqual(Array.from(app.menus[0].contexts), ["tab"]);
-  await app.changeSettings({ copyUrlsMenu: true });
-  assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs"]);
+  assert.deepEqual(ids(), ["copy-tab-urls", "split-selected-tabs", "close-duplicate-tabs"]);
+  assert.deepEqual(app.menus.map((menu) => menu.title), ["Copy URL(s)", "Split / Unsplit Tabs", "Close Duplicate Tabs"]);
   for (const menu of app.menus) assert.deepEqual(Array.from(menu.contexts), ["tab"]);
   await app.changeSettings({ splitSelectedMenu: false });
-  assert.deepEqual(ids(), ["copy-tab-urls"]);
-  assert.equal(app.menus[0].title, "Copy URL(s)");
+  assert.deepEqual(ids(), ["copy-tab-urls", "close-duplicate-tabs"]);
+  await app.changeSettings({ copyUrlsMenu: false, closeDuplicatesMenu: false });
+  assert.deepEqual(ids(), []);
+  await app.changeSettings({ copyUrlsMenu: true, closeDuplicatesMenu: true });
+  assert.deepEqual(ids(), ["copy-tab-urls", "close-duplicate-tabs"]);
   app.changeSettings({ splitSelectedMenu: true }, "local");
   app.changeSettings({ unrelated: true });
   await new Promise(setImmediate);
-  assert.deepEqual(ids(), ["copy-tab-urls"]);
+  assert.deepEqual(ids(), ["copy-tab-urls", "close-duplicate-tabs"]);
 });
 
 test("split shortcut uses the active tab and reports invalid selections", async () => {
@@ -314,6 +314,85 @@ test("copy menu rejects missing tabs and URLs without writing", async () => {
   assert.equal(app.messages.length, 0);
 });
 
+function duplicateTabsApp(tabs, override = () => {}) {
+  const removed = [];
+  const app = background((chrome) => {
+    chrome.tabs.query = async (options) => {
+      assert.equal(options.windowId, 7);
+      return tabs.filter((tab) => tab.windowId === 7 && (!options.active || tab.active));
+    };
+    chrome.tabs.get = async (id) => tabs.find((tab) => tab.id === id);
+    chrome.tabs.remove = async (id) => { removed.push(id); };
+    override(chrome);
+  });
+  return { app, removed, cleanup: () => app.menu({ menuItemId: "close-duplicate-tabs" }, { windowId: 7 }) };
+}
+
+test("duplicate cleanup keeps protected copies and otherwise keeps the leftmost tab", async () => {
+  const tabs = [
+    { id: 1, index: 0, url },
+    { id: 2, index: 1, url, active: true },
+    { id: 3, index: 2, url, pinned: true },
+    { id: 4, index: 3, url, splitViewId: 10 },
+    { id: 5, index: 4, url: "https://example.org/" },
+    { id: 6, index: 5, url: "https://example.org/" },
+    { id: 7, index: 6, url: "https://example.net/" },
+    { id: 8, index: 7, url: "https://example.net/", pinned: true }
+  ].map((tab) => ({ windowId: 7, ...tab }));
+  const { app, removed, cleanup } = duplicateTabsApp(tabs.reverse());
+  await cleanup();
+  assert.deepEqual(removed, [7, 6, 1]);
+  assert.deepEqual(Array.from(app.injections[0].args), ["3 duplicate tabs closed"]);
+  assert.equal(app.injections[0].target.tabId, 2);
+  assert.equal(app.errors.length, 0);
+});
+
+test("duplicate cleanup matches full URLs only, skips navigating tabs, and stays in one window", async () => {
+  const tabs = [
+    { id: 1, url, active: true },
+    { id: 2, url: url.replace("#fragment", "#different") },
+    { id: 3, url: url.replace("query=a%20b", "query=other") },
+    { id: 4, url, pendingUrl: "https://example.org/" },
+    { id: 5 },
+    { id: 6, url, windowId: 8 },
+    { id: 7, url: "https://example.org/", pendingUrl: url }
+  ].map((tab, index) => ({ windowId: 7, index, ...tab }));
+  const { app, removed, cleanup } = duplicateTabsApp(tabs);
+  await cleanup();
+  assert.deepEqual(removed, []);
+  assert.deepEqual(Array.from(app.injections[0].args), ["No duplicate tabs to close"]);
+});
+
+test("duplicate cleanup rechecks navigation, window, and protected state before closing", async () => {
+  for (const change of [
+    { url: "https://example.org/" }, { pendingUrl: "https://example.org/" },
+    { windowId: 8 }, { active: true }, { pinned: true }, { splitViewId: 0 }
+  ]) {
+    for (const changedId of [1, 2]) {
+      const tabs = [1, 2].map((id) => ({ id, index: id, windowId: 7, url }));
+      const { removed, cleanup } = duplicateTabsApp(tabs, (chrome) => {
+        chrome.tabs.get = async (id) => ({
+          ...tabs.find((tab) => tab.id === id), ...(id === changedId ? change : {})
+        });
+      });
+      await cleanup();
+      const keeperOnlyProtection = changedId === 1 && (change.active || change.pinned || change.splitViewId === 0);
+      assert.deepEqual(removed, keeperOnlyProtection ? [2] : []);
+    }
+  }
+});
+
+test("duplicate cleanup reports removal failures without a success message", async () => {
+  const tabs = [1, 2].map((id) => ({ id, index: id, windowId: 7, url }));
+  const { app, cleanup } = duplicateTabsApp(tabs, (chrome) => {
+    chrome.tabs.remove = async () => { throw new Error("Cannot close tab"); };
+  });
+  await cleanup();
+  assert.equal(app.errors.length, 1);
+  assert.match(app.errors[0][0], /could not close duplicate tabs/);
+  assert.equal(app.injections.length, 0);
+});
+
 test("options page saves menu choices", async () => {
   const elements = {};
   const element = (id) => (elements[id] ??= {
@@ -324,7 +403,7 @@ test("options page saves menu choices", async () => {
     document: { getElementById: element },
     chrome: {
       storage: { sync: {
-        get: async (defaults) => ({ ...defaults, copyUrlsMenu: true }),
+        get: async (defaults) => ({ ...defaults, closeDuplicatesMenu: false }),
         set: async (values) => { saved.push(values); }
       } }
     }
@@ -332,9 +411,13 @@ test("options page saves menu choices", async () => {
   await new Promise(setImmediate);
   assert.equal(elements.copyUrlsMenu.checked, true);
   assert.equal(elements.splitSelectedMenu.checked, true);
+  assert.equal(elements.closeDuplicatesMenu.checked, false);
   elements.copyUrlsMenu.checked = false;
   elements.copyUrlsMenu.listeners.change();
   assert.equal(JSON.stringify(saved), JSON.stringify([{ copyUrlsMenu: false }]));
+  elements.closeDuplicatesMenu.checked = true;
+  elements.closeDuplicatesMenu.listeners.change();
+  assert.equal(JSON.stringify(saved[1]), JSON.stringify({ closeDuplicatesMenu: true }));
   assert.match(source("options.html"), /<script src="options.js"><\/script>/);
 });
 
@@ -515,7 +598,7 @@ test("blocked injection preserves copying and reports confirmation failure", asy
   await app.copy({ id: 42, url });
   assert.equal(app.messages.length, 1);
   assert.equal(app.warnings.length, 1);
-  assert.match(app.warnings[0][0], /copied the URL/);
+  assert.match(app.warnings[0][0], /could not display confirmation/);
 });
 
 test("toast replaces prior confirmation, stays isolated, and removes itself", () => {
